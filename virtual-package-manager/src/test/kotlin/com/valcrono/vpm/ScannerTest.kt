@@ -37,7 +37,7 @@ class ScannerTest {
             components = listOf(VirtualComponent("com.example.app", "com.example.app.Main", ComponentType.ACTIVITY)),
             permissions = emptyList(),
             hasNativeLibraries = true,
-            primaryAbi = "armeabi-v7a",
+            primaryAbi = "mips",
             mainActivity = "com.example.app.Main",
         )
         val result = CompatibilityScanner().scan(metadata)
@@ -67,7 +67,7 @@ class ScannerTest {
                 components = listOf(VirtualComponent("com.example.unsupported", "com.example.unsupported.Main", ComponentType.ACTIVITY)),
                 permissions = emptyList(),
                 hasNativeLibraries = true,
-                primaryAbi = "x86_64",
+                primaryAbi = "mips",
                 mainActivity = "com.example.unsupported.Main",
             )
 
@@ -96,5 +96,40 @@ class ScannerTest {
             usesPlayIntegrity = true,
         )
         assertEquals(CompatibilityLevel.HIGH_RISK, CompatibilityScanner().scan(metadata).first)
+    }
+}
+
+
+class CooperativeApkClassificationTest {
+    private fun cooperative(pkg: String) = ApkMetadata(
+        packageName = pkg,
+        label = pkg.substringAfterLast('.'),
+        versionCode = 1,
+        versionName = "1.0",
+        minSdk = 26,
+        targetSdk = 35,
+        components = listOf(VirtualComponent(pkg, "$pkg.VirtualEntryPoint", ComponentType.ACTIVITY)),
+        permissions = emptyList(),
+        hasNativeLibraries = false,
+        primaryAbi = null,
+        mainActivity = "$pkg.MainActivity",
+        entryPointClass = "$pkg.VirtualEntryPoint",
+        entryPointImplementsInterface = true,
+        signingCertificateSha256 = "valid",
+    )
+
+    @Test fun testAppAIsCooperativeSupported() {
+        val result = CompatibilityScanner().scan(cooperative("com.valcrono.testapp.a"))
+        assertEquals(CompatibilityLevel.COOPERATIVE_SUPPORTED, result.first)
+        assertTrue(result.second.any { it.message == "Runtime cooperativo compatible" })
+        assertTrue(result.second.any { it.message == "Entry point encontrado" })
+    }
+
+    @Test fun testAppBIsCooperativeSupported() {
+        val result = CompatibilityScanner().scan(cooperative("com.valcrono.testapp.b"))
+        assertEquals(CompatibilityLevel.COOPERATIVE_SUPPORTED, result.first)
+        assertTrue(result.second.any { it.message == "Sin librerías nativas" })
+        assertTrue(result.second.any { it.message == "Sin Google Play Services" })
+        assertTrue(result.second.any { it.message == "Sin multiproceso" })
     }
 }
