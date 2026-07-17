@@ -17,12 +17,6 @@ data class VirtualStorageRecordEntity(val packageName:String,val virtualUserId:I
 data class CompatibilityIssueEntity(val packageName:String,val virtualUserId:Int,val severity:String,val code:String,val message:String)
 @Entity(tableName = "virtual_runtime_sessions", primaryKeys = ["id"])
 data class VirtualRuntimeSessionEntity(val id:String,val packageName:String,val virtualUserId:Int,val entryPointClass:String,val startedAt:Long,val state:String,val lastError:String?)
-@Entity(tableName = "virtual_shared_permissions", primaryKeys = ["packageName", "virtualUserId", "permission"])
-data class VirtualSharedPermissionEntity(val packageName:String,val virtualUserId:Int,val permission:String,val grantedAt:Long,val grantedBy:String)
-@Entity(tableName = "virtual_fs_access_log", primaryKeys = ["id"])
-data class VirtualFsAccessLogEntity(val id:String,val virtualUserId:Int,val packageName:String?,val role:String,val virtualPath:String,val operation:String,val allowed:Boolean,val at:Long)
-@Entity(tableName = "virtual_launch_tokens", primaryKeys = ["token"])
-data class VirtualLaunchTokenEntity(val token:String,val virtualUserId:Int,val packageName:String,val activityName:String,val createdAt:Long,val consumedAt:Long?)
 @Entity(tableName = "virtual_messages", indices = [Index("receiverPackage"), Index("senderPackage")])
 data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUserId:Int,val senderPackage:String,val receiverPackage:String,val type:String,val payload:String,val createdAt:Long,val deliveredAt:Long?,val consumedAt:Long?,val status:String,val attemptCount:Int)
 
@@ -44,10 +38,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE senderPackage=:pkg AND virtualUserId=:userId") suspend fun sentCount(pkg:String,userId:Int): Int
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE receiverPackage=:pkg AND virtualUserId=:userId") suspend fun receivedCount(pkg:String,userId:Int): Int
 }
-@Dao interface VirtualRuntimeDao { @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity); @Query("UPDATE virtual_runtime_sessions SET state=:state,lastError=:error WHERE id=:id") suspend fun update(id:String,state:String,error:String?); @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVE'") suspend fun activeCount(): Int }
-@Dao interface VirtualSharedPermissionDao { @Upsert suspend fun upsert(permission: VirtualSharedPermissionEntity); @Query("SELECT permission FROM virtual_shared_permissions WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun permissions(packageName:String,userId:Int): List<String> }
-@Dao interface VirtualFsAccessLogDao { @Insert suspend fun insert(row: VirtualFsAccessLogEntity) }
-@Dao interface VirtualLaunchTokenDao { @Upsert suspend fun upsert(token: VirtualLaunchTokenEntity); @Query("SELECT * FROM virtual_launch_tokens WHERE token=:token AND consumedAt IS NULL") suspend fun getFresh(token:String): VirtualLaunchTokenEntity?; @Query("UPDATE virtual_launch_tokens SET consumedAt=:time WHERE token=:token") suspend fun consume(token:String,time:Long) }
+@Dao interface VirtualRuntimeDao { @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity); @Query("UPDATE virtual_runtime_sessions SET state=:state,lastError=:error WHERE id=:id") suspend fun update(id:String,state:String,error:String?); @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVA'") suspend fun activeCount(): Int }
 @Dao interface VirtualInstallSessionDao { @Upsert suspend fun upsert(session: VirtualInstallSessionEntity) }
 @Dao interface VirtualComponentDao { @Upsert suspend fun upsertAll(components: List<VirtualComponentEntity>); @Query("SELECT * FROM virtual_components WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun forPackage(packageName:String,userId:Int): List<VirtualComponentEntity> }
 @Dao interface VirtualPermissionDao {
@@ -57,7 +48,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class], version=4, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class], version=3, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
@@ -67,7 +58,4 @@ abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun permissions(): VirtualPermissionDao
     abstract fun issues(): CompatibilityIssueDao
     abstract fun storageRecords(): VirtualStorageRecordDao
-    abstract fun sharedPermissions(): VirtualSharedPermissionDao
-    abstract fun fsAccessLog(): VirtualFsAccessLogDao
-    abstract fun launchTokens(): VirtualLaunchTokenDao
 }

@@ -8,6 +8,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.valcrono.core.VLog
 import com.valcrono.runtime.VirtualContent
+import com.valcrono.vproc.InMemoryLaunchTokens
 import kotlinx.coroutines.runBlocking
 
 class ProxyActivity : Activity() {
@@ -23,21 +24,17 @@ class ProxyActivity : Activity() {
         val activity = intent.getStringExtra("virtualActivityName").orEmpty()
         val token = intent.getStringExtra("launchToken").orEmpty()
         try {
+            require(InMemoryLaunchTokens.consume(token, userId, packageName, activity)) { "LAUNCH_TOKEN_INVALID" }
             val repository = VirtualRepository(applicationContext)
-            val persistedToken = runBlocking { repository.db.launchTokens().getFresh(token) }
-            require(persistedToken != null && persistedToken.virtualUserId == userId && persistedToken.packageName == packageName && persistedToken.activityName == activity) { "LAUNCH_TOKEN_INVALID" }
-            runBlocking { repository.db.launchTokens().consume(token, System.currentTimeMillis()) }
-            runBlocking { repository.db.runtime().upsert(VirtualRuntimeSessionEntity(token, packageName, userId, "", System.currentTimeMillis(), "STARTING", null)) }
             val pkg = runBlocking { repository.getPackage(packageName, userId) } ?: error("PACKAGE_NOT_REGISTERED")
             require(pkg.enabled && !pkg.damaged) { "PACKAGE_DISABLED_OR_DAMAGED" }
             require(runBlocking { repository.verifyPackage(pkg) }) { "APK_HASH_MISMATCH" }
             running = VirtualRuntimeHost(this, repository).start(pkg)
             render(running.entry.createContent())
-            runBlocking { repository.db.runtime().upsert(VirtualRuntimeSessionEntity(token, pkg.packageName, pkg.virtualUserId, pkg.entryPointClass.orEmpty(), System.currentTimeMillis(), "ACTIVE", null)) }
+            runBlocking { repository.db.runtime().upsert(VirtualRuntimeSessionEntity(token, pkg.packageName, pkg.virtualUserId, pkg.entryPointClass.orEmpty(), System.currentTimeMillis(), "RUNNING", null)) }
             VLog.i("ProxyActivity", "started cooperative runtime package=$packageName entry=${pkg.entryPointClass}")
         } catch (t: Throwable) {
             VLog.e("ProxyActivity", "runtime launch failed package=$packageName error=${t.message}", t)
-            runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().update(token, "ERROR", (t.message ?: "RUNTIME_INITIALIZATION_FAILED").take(500)) } }
             renderError(t.message ?: "RUNTIME_INITIALIZATION_FAILED")
         }
     }

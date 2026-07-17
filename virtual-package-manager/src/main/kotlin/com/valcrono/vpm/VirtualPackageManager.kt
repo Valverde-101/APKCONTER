@@ -128,7 +128,7 @@ class ApkMetadataParser {
                     primaryAbi = name.split('/').getOrNull(1) ?: primaryAbi
                 }
                 hasSplit = hasSplit || name.startsWith("split_") || name.contains("/split_config.")
-                usesDynamic = usesDynamic || ((name.endsWith(".jar") || name.endsWith(".dex")) && !Regex("^classes(\\d+)?\\.dex$").matches(name) && (name.startsWith("assets/") || name.contains("/")))
+                usesDynamic = usesDynamic || name.endsWith(".jar") || name.endsWith(".dex") && name != "classes.dex"
                 usesGms = usesGms || name.contains("google/android/gms")
                 usesFirebase = usesFirebase || name.contains("firebase")
                 usesFileProvider = usesFileProvider || name.contains("FileProvider")
@@ -187,8 +187,8 @@ class CompatibilityScanner {
         if (metadata.entryPointClass == null && metadata.components.none { it.type == ComponentType.ACTIVITY }) issue(CompatibilityLevel.UNSUPPORTED, "NO_ACTIVITY", "No launchable activity or cooperative entry point detected")
         if (metadata.hasSplitMarker) issue(CompatibilityLevel.UNSUPPORTED, "SPLIT_APK", "Split APK/App Bundle artifacts are not supported in Phase 1")
         if (metadata.components.any { it.type == ComponentType.SERVICE }) issue(CompatibilityLevel.LIMITED, "HAS_SERVICES", "Services are virtualized in Phase 2")
-        if (metadata.components.any { it.type == ComponentType.PROVIDER && it.packageName == metadata.packageName && !it.name.contains("androidx", ignoreCase = true) }) issue(CompatibilityLevel.LIMITED, "HAS_PROVIDERS", "App providers are virtualized in Phase 2")
-        if (metadata.components.any { it.type == ComponentType.RECEIVER && it.packageName == metadata.packageName && !it.name.contains("androidx", ignoreCase = true) }) issue(CompatibilityLevel.LIMITED, "HAS_RECEIVERS", "App receivers are virtualized in Phase 2")
+        if (metadata.components.any { it.type == ComponentType.PROVIDER }) issue(CompatibilityLevel.LIMITED, "HAS_PROVIDERS", "Providers are virtualized in Phase 2")
+        if (metadata.components.any { it.type == ComponentType.RECEIVER }) issue(CompatibilityLevel.LIMITED, "HAS_RECEIVERS", "Receivers are virtualized in Phase 2")
         if (metadata.components.mapNotNull { it.processName }.distinct().size > 1) issue(CompatibilityLevel.HIGH_RISK, "MULTI_PROCESS", "Multiple virtual processes are high risk in Phase 1")
         if (metadata.usesGooglePlayServices) issue(CompatibilityLevel.HIGH_RISK, "USES_GMS", "Google Play Services are not provided by the container")
         if (metadata.usesFirebase) issue(CompatibilityLevel.LIMITED, "USES_FIREBASE", "Firebase dependencies may expect Google services/network")
@@ -199,7 +199,7 @@ class CompatibilityScanner {
         if (metadata.usesDeviceAdmin) issue(CompatibilityLevel.HIGH_RISK, "DEVICE_ADMIN", "DeviceAdmin cannot be virtualized safely in Phase 1")
         if (metadata.usesVpn) issue(CompatibilityLevel.HIGH_RISK, "VPN_SERVICE", "VPN service cannot be virtualized safely in Phase 1")
         if (metadata.usesPlayIntegrity) issue(CompatibilityLevel.HIGH_RISK, "PLAY_INTEGRITY", "Play Integrity is not supported by this private container")
-        val cooperativeBlocked = issues.any { it.severity == CompatibilityLevel.UNSUPPORTED }
+        val cooperativeBlocked = issues.any { it.severity == CompatibilityLevel.UNSUPPORTED || it.severity == CompatibilityLevel.HIGH_RISK || it.code in setOf("HAS_SERVICES", "HAS_PROVIDERS") }
         val cooperative = metadata.entryPointClass != null && metadata.entryPointImplementsInterface && !cooperativeBlocked && metadata.signingCertificateSha256 != null
         if (cooperative) {
             issue(CompatibilityLevel.COOPERATIVE_SUPPORTED, "COOPERATIVE_RUNTIME", "Runtime cooperativo compatible")
