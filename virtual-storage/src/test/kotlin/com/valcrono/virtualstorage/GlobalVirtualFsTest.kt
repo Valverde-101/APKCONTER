@@ -2,11 +2,12 @@ package com.valcrono.virtualstorage
 
 import org.junit.Assert.*
 import org.junit.Test
+import java.nio.file.Files
 import java.io.File
 
 class GlobalVirtualFsTest {
     private fun fs(): Pair<File, VirtualFileSystem> {
-        val root = createTempDir()
+        val root = Files.createTempDirectory("vfs-test").toFile()
         File(root, "virtual/users/0/com.valcrono.testapp.a/data/files").mkdirs()
         File(root, "virtual/users/0/com.valcrono.testapp.a/data/files/a-file.txt").writeText("a")
         File(root, "virtual/users/0/com.valcrono.testapp.b/data/databases").mkdirs()
