@@ -2,71 +2,59 @@ package com.valcrono.virtualspace
 
 import android.os.Process
 import androidx.room.withTransaction
-import com.valcrono.core.VLog
 import kotlinx.coroutines.flow.Flow
-import java.util.UUID
-
-private const val TOKEN_TTL_MS = 5 * 60 * 1000L
-const val START_TIMEOUT_MS: Long = 30_000L
-
-data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean)
 
 class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
 
-    suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, now: Long = System.currentTimeMillis()): PreparedLaunch = db.withTransaction {
-        val before = db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)
-        val sessionId = before?.sessionId ?: UUID.randomUUID().toString()
-        val attemptId = if (before?.state == "STARTING" && before.currentLaunchAttemptId != null) before.currentLaunchAttemptId else UUID.randomUUID().toString()
-        val token = UUID.randomUUID().toString()
-        logLaunch("SESSION_PREPARE", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, "STARTING")
-        if (before?.state == "ACTIVE") return@withTransaction PreparedLaunch(sessionId, before.currentLaunchAttemptId.orEmpty(), token, false)
-        val row = (before ?: VirtualRuntimeSessionEntity(sessionId, pkg.packageName, pkg.virtualUserId, "STOPPED", null, now, null, now, now, null, Process.myPid(), activity, "PENDING", "NEW", null, null)).copy(
-            state = "STARTING",
-            currentLaunchAttemptId = attemptId,
-            startedAt = null,
-            lastActivityAt = now,
-            lastHeartbeatAt = now,
-            stoppedAt = null,
-            hostPid = Process.myPid(),
-            entryPoint = activity,
-            classLoaderState = "PENDING",
-            launchPhase = "PREPARED",
-            errorCode = null,
-            sanitizedError = null,
-        )
-        db.runtime().upsert(row)
-        logLaunch("SESSION_STARTING_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, row.state)
-        db.launchTokens().upsert(VirtualLaunchTokenEntity(token, sessionId, attemptId, pkg.virtualUserId, pkg.packageName, activity, now, now + TOKEN_TTL_MS, null))
-        logLaunch("TOKEN_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, null, null)
-        PreparedLaunch(sessionId, attemptId, token, true)
+    suspend fun prepareLaunch(pkg: VirtualPackageEntity, token: String, activity: String, now: Long = System.currentTimeMillis()): VirtualRuntimeSessionEntity = db.withTransaction {
+        val existing = db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)
+        when (existing?.state) {
+            "ACTIVE", "STARTING" -> existing
+            "PAUSED" -> existing.copy(state = "ACTIVE", lastActivityAt = now, startedAt = existing.startedAt ?: now, stoppedAt = null, errorCode = null, sanitizedError = null).also { db.runtime().upsert(it) }
+            else -> {
+                val row = VirtualRuntimeSessionEntity(
+                    sessionId = existing?.sessionId ?: token,
+                    packageName = pkg.packageName,
+                    virtualUserId = pkg.virtualUserId,
+                    state = "STARTING",
+                    createdAt = now,
+                    startedAt = null,
+                    lastActivityAt = now,
+                    stoppedAt = null,
+                    hostPid = Process.myPid(),
+                    entryPoint = activity,
+                    classLoaderState = "PENDING",
+                    errorCode = null,
+                    sanitizedError = null,
+                )
+                db.runtime().upsert(row)
+                db.runtime().deleteDuplicatesFor(pkg.packageName, pkg.virtualUserId, row.sessionId)
+                db.launchTokens().upsert(VirtualLaunchTokenEntity(token, pkg.virtualUserId, pkg.packageName, activity, now, null))
+                row
+            }
+        }
     }
 
-    suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) { db.runtime().markStaleStarting(now); db.runtime().markProcessLost(now) }
+    suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) {
+        db.runtime().markStaleStarting(now)
+        db.runtime().markProcessLost(now)
+    }
 }
 
 class RuntimeSessionController(private val repository: RuntimeSessionRepository, private val db: ValcronoDatabase, private val metrics: RuntimeMetricsRepository) {
-    suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String): PreparedLaunch = repository.prepareLaunch(pkg, activity)
-    suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { it.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(it.sessionId, a, "STOPPED", "STOPPED", System.currentTimeMillis(), null, null) }; metrics.removeMetrics(it.sessionId) } }
-    suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", System.currentTimeMillis(), "LAUNCH_CANCELLED", "Inicio cancelado por el usuario.") ; metrics.removeMetrics(sessionId) } }
-    suspend fun watchdogTick(timeoutMs: Long = START_TIMEOUT_MS) {
-        val now = System.currentTimeMillis(); val deadline = now - timeoutMs
-        val stale = db.runtime().staleStarting(deadline)
-        stale.forEach { row ->
-            val attempt = row.currentLaunchAttemptId ?: return@forEach
-            logLaunch("WATCHDOG_CHECK", row.sessionId, attempt, null, row.packageName, row.virtualUserId, row.state, row.state)
-            val changed = db.runtime().timeoutLaunch(row.sessionId, attempt, deadline, now)
-            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); metrics.removeMetrics(row.sessionId) }
-        }
-        db.launchTokens().cleanup(now, now - 24 * 60 * 60 * 1000L)
+    suspend fun prepareLaunch(pkg: VirtualPackageEntity, token: String, activity: String): VirtualRuntimeSessionEntity = repository.prepareLaunch(pkg, token, activity)
+    suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { db.runtime().updateState(it.sessionId, "STOPPED", System.currentTimeMillis(), null, null); metrics.removeMetrics(it.sessionId) } }
+    suspend fun cancelStarting(sessionId: String) { db.runtime().updateState(sessionId, "ERROR", System.currentTimeMillis(), "LAUNCH_CANCELLED", "Inicio cancelado por el usuario.") ; metrics.removeMetrics(sessionId) }
+    suspend fun watchdogTick(timeoutMs: Long = 15_000) {
+        val now = System.currentTimeMillis()
+        val stale = db.runtime().staleStarting(now - timeoutMs)
+        stale.forEach { db.launchTokens().revoke(it.sessionId, now); metrics.removeMetrics(it.sessionId) }
+        db.runtime().timeoutStarting(now - timeoutMs, now)
     }
 }
 
 class RuntimeMetricsRepository(private val tracker: RuntimeResourceTracker) {
     fun replaceMetricsForSessions(rows: List<VirtualRuntimeSessionEntity>) = tracker.replaceMetricsForSessions(rows)
     fun removeMetrics(sessionId: String) = tracker.remove(sessionId)
-}
-
-fun logLaunch(event: String, sessionId: String?, attemptId: String?, token: String?, packageName: String?, userId: Int?, before: String?, after: String?) {
-    VLog.i("RuntimeLaunch", "$event sessionId=${sessionId?.take(8)} launchAttemptId=${attemptId?.take(8)} tokenPrefix=${token?.take(8)} packageName=$packageName virtualUserId=$userId stateBefore=$before stateAfter=$after timestamp=${System.currentTimeMillis()} thread=${Thread.currentThread().name} hostPid=${Process.myPid()}")
 }

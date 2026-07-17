@@ -80,9 +80,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
 import com.valcrono.core.MemoryBudgetManager
 import com.valcrono.core.MemoryInputs
 import com.valcrono.core.MemoryProfile
@@ -196,13 +193,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             }
         }
         LaunchedEffect(Unit) {
-            lifecycleScope.launch {
-                repeatOnLifecycle(Lifecycle.State.STARTED) {
-                    while (true) {
-                        withContext(Dispatchers.IO) { runtimeController.watchdogTick() }
-                        delay(1000)
-                    }
-                }
+            while (true) {
+                withContext(Dispatchers.IO) { runtimeController.watchdogTick() }
+                delay(1000)
             }
         }
         LaunchedEffect(destination) {
@@ -555,12 +548,12 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { runMemoryCleanup(settings) }) { Text("Ejecutar limpieza") }
                 }
             }
-            items(sessions) { session -> SessionCard(session, packages.firstOrNull { it.packageName == session.packageName }?.label ?: session.packageName, packages) }
+            items(sessions) { session -> SessionCard(session, packages.firstOrNull { it.packageName == session.packageName }?.label ?: session.packageName) }
         }
     }
 
     @Composable
-    private fun SessionCard(session: VirtualRuntimeSessionEntity, label: String, packages: List<VirtualPackageEntity>) {
+    private fun SessionCard(session: VirtualRuntimeSessionEntity, label: String) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 val state = runCatching { SessionState.valueOf(session.state) }.getOrDefault(SessionState.ERROR)
@@ -572,11 +565,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 session.sanitizedError?.let { Text("Error: $it") }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (state == SessionState.ACTIVE) Button(onClick = { pausePackageBySession(session) }) { Text("Pausar") }
-                    if (state == SessionState.ERROR) {
-                        Button(onClick = { packages.firstOrNull { it.packageName == session.packageName && it.virtualUserId == session.virtualUserId }?.let { launchVirtual(it) } }) { Text("Reintentar") }
-                        Button(onClick = { selectedPackage = packages.firstOrNull { it.packageName == session.packageName && it.virtualUserId == session.virtualUserId }; destination = Destination.APP_DIAG }) { Text("Ver error") }
-                        Button(onClick = { destination = Destination.FILES }) { Text("Archivos") }
-                    } else if (state != SessionState.STOPPED) Button(onClick = { stopPackageBySession(session) }) { Text("Detener") }
+                    if (state != SessionState.STOPPED) Button(onClick = { stopPackageBySession(session) }) { Text("Detener") }
                 }
             }
         }
@@ -600,25 +589,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             return
         }
         val root = repository.storage().resolver().packageRoot(pkg.virtualUserId, pkg.packageName)
-        val session by repository.db.runtime().observeSessions().collectAsState(initial = emptyList())
-        val roomSession = session.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }
         val rows = listOf(
             "Hash del APK" to pkg.sha256,
             "Ruta interna" to "aislada (no expuesta a apps virtuales)",
             "Firma" to "Validada por PackageManager",
             "Entry point" to (pkg.entryPointClass ?: "No disponible"),
-            "Estado" to (roomSession?.state ?: "DETENIDA"),
-            "sessionId" to (roomSession?.sessionId?.take(8) ?: "No disponible"),
-            "launchAttemptId" to (roomSession?.currentLaunchAttemptId?.take(8) ?: "No disponible"),
-            "launchPhase" to (roomSession?.launchPhase ?: "No disponible"),
-            "hostPid" to (roomSession?.hostPid?.toString() ?: "No disponible"),
-            "createdAt" to (roomSession?.createdAt?.let(::date) ?: "No disponible"),
-            "startedAt" to (roomSession?.startedAt?.let(::date) ?: "No disponible"),
-            "lastHeartbeatAt" to (roomSession?.lastHeartbeatAt?.let(::date) ?: "No disponible"),
-            "lastActivityAt" to (roomSession?.lastActivityAt?.let(::date) ?: "No disponible"),
-            "errorCode" to (roomSession?.errorCode ?: "No disponible"),
-            "sanitizedError" to (roomSession?.sanitizedError ?: "No disponible"),
-            "classLoaderState" to (roomSession?.classLoaderState ?: "No disponible"),
+            "ClassLoader" to "DexClassLoader aislado",
+            "Sesión actual" to (resourceTracker.allSessions().firstOrNull { it.packageName == pkg.packageName }?.state?.name ?: "DETENIDA"),
+            "Último error" to "No disponible",
             "Archivos usados" to root.walkTopDown().count { it.isFile }.toString(),
             "Clasificación de compatibilidad" to pkg.compatibilityLevel,
         )
@@ -763,18 +741,19 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     private fun launchVirtual(pkg: VirtualPackageEntity) {
         val activity = pkg.entryPointClass ?: run { importStatus = "No ejecutable: entry point no declarado"; return }
         if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
+        val token = java.util.UUID.randomUUID().toString()
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
-            val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity) }
-            if (!prepared.shouldStartActivity) { importStatus = "Sesión existente reutilizada: ${pkg.label}"; return@launch }
-            logLaunch("INTENT_SENT", prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, pkg.packageName, pkg.virtualUserId, "STARTING", "STARTING")
+            val shouldStart = withContext(Dispatchers.IO) {
+                val row = runtimeController.prepareLaunch(pkg, token, activity)
+                row.sessionId == token && row.state == "STARTING"
+            }
+            if (!shouldStart) { importStatus = "Sesión existente reutilizada: ${pkg.label}"; return@launch }
             startActivity(
                 Intent(this@MainActivity, ProxyActivity::class.java)
                     .putExtra("virtualUserId", pkg.virtualUserId)
                     .putExtra("virtualPackageName", pkg.packageName)
                     .putExtra("virtualActivityName", activity)
-                    .putExtra("sessionId", prepared.sessionId)
-                    .putExtra("launchAttemptId", prepared.launchAttemptId)
-                    .putExtra("launchToken", prepared.launchToken),
+                    .putExtra("launchToken", token),
             )
         }
     }
@@ -785,16 +764,16 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun pausePackage(pkg: VirtualPackageEntity) {
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)?.let { it.currentLaunchAttemptId?.let { a -> repository.db.runtime().compareAndSetState(it.sessionId, a, "PAUSED", "PAUSED", System.currentTimeMillis(), null, null) } } }
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)?.let { repository.db.runtime().updateState(it.sessionId, "PAUSED", System.currentTimeMillis(), null, null) } }
         importStatus = "Sesión pausada: ${pkg.label}"
     }
 
     private fun stopPackageBySession(session: VirtualRuntimeSessionEntity) {
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { session.currentLaunchAttemptId?.let { repository.db.runtime().compareAndSetState(session.sessionId, it, "STOPPED", "STOPPED", System.currentTimeMillis(), null, null) }; runtimeMetrics.removeMetrics(session.sessionId) }
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().updateState(session.sessionId, "STOPPED", System.currentTimeMillis(), null, null); runtimeMetrics.removeMetrics(session.sessionId) }
     }
 
     private fun pausePackageBySession(session: VirtualRuntimeSessionEntity) {
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { session.currentLaunchAttemptId?.let { repository.db.runtime().compareAndSetState(session.sessionId, it, "PAUSED", "PAUSED", System.currentTimeMillis(), null, null) } }
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().updateState(session.sessionId, "PAUSED", System.currentTimeMillis(), null, null) }
     }
 
     private fun closeAllSessions() {
