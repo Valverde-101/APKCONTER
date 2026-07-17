@@ -7,7 +7,6 @@ import com.valcrono.runtime.*
 import com.valcrono.virtualstorage.VirtualPathResolver
 import kotlinx.coroutines.runBlocking
 import java.io.File
-import java.util.UUID
 
 class VirtualRuntimeHost(private val context: Context, private val repository: VirtualRepository) {
     fun start(pkg: VirtualPackageEntity): RunningVirtualApp {
@@ -29,7 +28,7 @@ class AndroidVirtualAppEnvironment(private val context: Context, private val rep
     override val metadata = VirtualAppMetadata(pkg.virtualUserId, pkg.packageName, pkg.label, pkg.versionName)
     override val logger = object : VirtualLogger { override fun info(message:String)= VLog.i(pkg.packageName,message); override fun error(message:String, throwable:Throwable?)=VLog.e(pkg.packageName,message,throwable) }
     override val files = object : VirtualFileApi {
-        override fun writeText(relativePath: String, text: String) { repository.storage().ensureQuota(pkg.virtualUserId,pkg.packageName,text.toByteArray().size.toLong()); val f=resolver.resolve(pkg.virtualUserId,pkg.packageName,"data/$relativePath"); f.parentFile?.mkdirs(); f.writeText(text) }
+        override fun writeText(relativePath: String, text: String) { val f=resolver.resolve(pkg.virtualUserId,pkg.packageName,"data/$relativePath"); f.parentFile?.mkdirs(); f.writeText(text) }
         override fun readText(relativePath: String): String? { val f=resolver.resolve(pkg.virtualUserId,pkg.packageName,"data/$relativePath"); return f.takeIf{it.isFile}?.readText() }
         override fun list(relativeDir: String): List<String> { val d=resolver.resolve(pkg.virtualUserId,pkg.packageName,"data/$relativeDir"); return d.listFiles()?.map{it.name}.orEmpty() }
     }
@@ -49,8 +48,8 @@ class AndroidVirtualAppEnvironment(private val context: Context, private val rep
         override fun listDatabases(): List<String> = resolver.resolve(pkg.virtualUserId,pkg.packageName,"data/databases").listFiles()?.map{it.name}.orEmpty()
     }
     override val messages = object : VirtualMessageApi {
-        override fun send(toPackage:String,type:String,payload:String): Long { require(payload.toByteArray().size<=4096) { "PAYLOAD_TOO_LARGE" }; val id=UUID.randomUUID().toString(); runBlocking { repository.db.messages().insert(VirtualMessageEntity(messageId=id, virtualUserId=pkg.virtualUserId, senderPackage=pkg.packageName, receiverPackage=toPackage, type=type, payload=payload, createdAt=System.currentTimeMillis(), deliveredAt=null, consumedAt=null, status="PENDING", attemptCount=0)) }; return id.hashCode().toLong() }
-        override fun pending(): List<VirtualMessage> = runBlocking { repository.db.messages().pendingFor(pkg.packageName,pkg.virtualUserId).map{ VirtualMessage(it.messageId.hashCode().toLong(),it.senderPackage,it.receiverPackage,it.type,it.payload,it.status) } }
-        override fun markDelivered(messageId: Long) { runBlocking { repository.db.messages().pendingFor(pkg.packageName,pkg.virtualUserId).firstOrNull { it.messageId.hashCode().toLong() == messageId }?.let { repository.db.messages().markDelivered(it.messageId,System.currentTimeMillis()); repository.db.messages().markConsumed(it.messageId,System.currentTimeMillis()) } } }
+        override fun send(toPackage:String,type:String,payload:String): Long { require(payload.length<=4096); return runBlocking { repository.db.messages().insert(VirtualMessageEntity(virtualUserId=pkg.virtualUserId, fromPackage=pkg.packageName, toPackage=toPackage, type=type, payload=payload, state="PENDING", createdAt=System.currentTimeMillis(), deliveredAt=null)) } }
+        override fun pending(): List<VirtualMessage> = runBlocking { repository.db.messages().pendingFor(pkg.packageName,pkg.virtualUserId).map{ VirtualMessage(it.id,it.fromPackage,it.toPackage,it.type,it.payload,it.state) } }
+        override fun markDelivered(messageId: Long) { runBlocking { repository.db.messages().markDelivered(messageId,System.currentTimeMillis()) } }
     }
 }
