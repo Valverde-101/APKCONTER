@@ -17,32 +17,38 @@ data class VirtualStorageRecordEntity(val packageName:String,val virtualUserId:I
 data class CompatibilityIssueEntity(val packageName:String,val virtualUserId:Int,val severity:String,val code:String,val message:String)
 @Entity(tableName = "virtual_runtime_sessions", primaryKeys = ["id"])
 data class VirtualRuntimeSessionEntity(val id:String,val packageName:String,val virtualUserId:Int,val entryPointClass:String,val startedAt:Long,val state:String,val lastError:String?)
-@Entity(tableName = "virtual_messages", indices = [Index("toPackage"), Index("fromPackage")])
-data class VirtualMessageEntity(@PrimaryKey(autoGenerate = true) val id:Long = 0,val virtualUserId:Int,val fromPackage:String,val toPackage:String,val type:String,val payload:String,val state:String,val createdAt:Long,val deliveredAt:Long?)
+@Entity(tableName = "virtual_messages", indices = [Index("receiverPackage"), Index("senderPackage")])
+data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUserId:Int,val senderPackage:String,val receiverPackage:String,val type:String,val payload:String,val createdAt:Long,val deliveredAt:Long?,val consumedAt:Long?,val status:String,val attemptCount:Int)
 
 @Dao interface VirtualPackageDao {
     @Upsert suspend fun upsertPackage(pkg: VirtualPackageEntity)
     @Query("SELECT * FROM virtual_packages ORDER BY label") fun observePackages(): Flow<List<VirtualPackageEntity>>
     @Query("SELECT * FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun getPackage(packageName:String,userId:Int): VirtualPackageEntity?
+    @Query("SELECT COUNT(*) FROM virtual_packages") suspend fun count(): Int
     @Query("UPDATE virtual_packages SET damaged=1 WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun markDamaged(packageName:String,userId:Int)
     @Query("DELETE FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun deletePackage(packageName:String,userId:Int)
 }
 @Dao interface VirtualMessageDao {
-    @Insert suspend fun insert(message: VirtualMessageEntity): Long
-    @Query("SELECT * FROM virtual_messages WHERE toPackage=:toPkg AND virtualUserId=:userId AND state='PENDING' ORDER BY createdAt") suspend fun pendingFor(toPkg:String,userId:Int): List<VirtualMessageEntity>
-    @Query("UPDATE virtual_messages SET state='DELIVERED', deliveredAt=:time WHERE id=:id") suspend fun markDelivered(id:Long,time:Long)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insert(message: VirtualMessageEntity): Long
+    @Query("SELECT * FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId AND status IN ('PENDING','DELIVERING','DELIVERED') ORDER BY createdAt") suspend fun pendingFor(toPkg:String,userId:Int): List<VirtualMessageEntity>
+    @Query("SELECT * FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId ORDER BY createdAt DESC LIMIT 100") suspend fun historyFor(toPkg:String,userId:Int): List<VirtualMessageEntity>
+    @Query("UPDATE virtual_messages SET status='DELIVERED', deliveredAt=:time, attemptCount=attemptCount+1 WHERE messageId=:messageId AND status IN ('PENDING','DELIVERING')") suspend fun markDelivered(messageId:String,time:Long)
+    @Query("UPDATE virtual_messages SET status='CONSUMED', consumedAt=:time WHERE messageId=:messageId AND status!='CONSUMED'") suspend fun markConsumed(messageId:String,time:Long)
+    @Query("DELETE FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId") suspend fun clearHistory(toPkg:String,userId:Int)
+    @Query("SELECT COUNT(*) FROM virtual_messages WHERE senderPackage=:pkg AND virtualUserId=:userId") suspend fun sentCount(pkg:String,userId:Int): Int
+    @Query("SELECT COUNT(*) FROM virtual_messages WHERE receiverPackage=:pkg AND virtualUserId=:userId") suspend fun receivedCount(pkg:String,userId:Int): Int
 }
-@Dao interface VirtualRuntimeDao { @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity); @Query("UPDATE virtual_runtime_sessions SET state=:state,lastError=:error WHERE id=:id") suspend fun update(id:String,state:String,error:String?) }
+@Dao interface VirtualRuntimeDao { @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity); @Query("UPDATE virtual_runtime_sessions SET state=:state,lastError=:error WHERE id=:id") suspend fun update(id:String,state:String,error:String?); @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVA'") suspend fun activeCount(): Int }
 @Dao interface VirtualInstallSessionDao { @Upsert suspend fun upsert(session: VirtualInstallSessionEntity) }
-@Dao interface VirtualComponentDao { @Upsert suspend fun upsertAll(components: List<VirtualComponentEntity>) }
+@Dao interface VirtualComponentDao { @Upsert suspend fun upsertAll(components: List<VirtualComponentEntity>); @Query("SELECT * FROM virtual_components WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun forPackage(packageName:String,userId:Int): List<VirtualComponentEntity> }
 @Dao interface VirtualPermissionDao {
     @Upsert suspend fun upsertAll(permissions: List<VirtualPermissionEntity>)
     @Query("SELECT name FROM virtual_permissions WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY name") suspend fun permissionNames(packageName:String,userId:Int): List<String>
 }
-@Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>) }
+@Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class], version=2, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class], version=3, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
