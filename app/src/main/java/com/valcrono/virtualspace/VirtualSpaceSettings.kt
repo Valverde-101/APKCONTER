@@ -86,6 +86,11 @@ class VirtualSpaceSettingsStore(private val context: Context) {
             backupSha256 = prefs[Keys.backupSha256] ?: true,
             backupBeforeDelete = prefs[Keys.backupBeforeDelete] ?: true,
             showStackTraces = prefs[Keys.showStackTraces] ?: false,
+            maxActiveApps = prefs[Keys.maxActiveApps] ?: 1,
+            openAnotherAppPolicy = prefs[Keys.openAnotherAppPolicy]?.let { runCatching { OpenAnotherAppPolicy.valueOf(it) }.getOrNull() } ?: OpenAnotherAppPolicy.PAUSE_CURRENT,
+            maxCacheStorageMb = prefs[Keys.maxCacheStorageMb] ?: 256,
+            warnLowStorage = prefs[Keys.warnLowStorage] ?: true,
+            logLevel = prefs[Keys.logLevel] ?: "Información",
         )
     }
 
@@ -96,6 +101,11 @@ class VirtualSpaceSettingsStore(private val context: Context) {
     suspend fun setFlagSecure(value: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.flagSecureEnabled] = value } }
     suspend fun setBool(key: String, value: Boolean) { context.virtualSpaceDataStore.edit { it[booleanPreferencesKey(key)] = value } }
     suspend fun setFirstRunComplete(done: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.firstRunComplete] = done } }
+    suspend fun setMaxActiveApps(value: Int) { context.virtualSpaceDataStore.edit { it[Keys.maxActiveApps] = value.coerceIn(1, 3) } }
+    suspend fun setOpenAnotherAppPolicy(policy: OpenAnotherAppPolicy) { context.virtualSpaceDataStore.edit { it[Keys.openAnotherAppPolicy] = policy.name } }
+    suspend fun setMaxCacheStorageMb(value: Int) { context.virtualSpaceDataStore.edit { it[Keys.maxCacheStorageMb] = value.coerceAtLeast(1) } }
+    suspend fun setWarnLowStorage(value: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.warnLowStorage] = value } }
+    suspend fun setLogLevel(value: String) { context.virtualSpaceDataStore.edit { it[Keys.logLevel] = value } }
     suspend fun reset() { context.virtualSpaceDataStore.edit { it.clear() } }
 
     fun exportJson(settings: VirtualSpaceSettings, perAppPolicies: Map<String, String> = emptyMap()): String =
@@ -118,5 +128,10 @@ class VirtualSpaceSettingsStore(private val context: Context) {
         val backupSha256 = booleanPreferencesKey("backup_sha256")
         val backupBeforeDelete = booleanPreferencesKey("backup_before_delete")
         val showStackTraces = booleanPreferencesKey("show_stack_traces")
+        val maxActiveApps = intPreferencesKey("max_active_apps")
+        val openAnotherAppPolicy = stringPreferencesKey("open_another_app_policy")
+        val maxCacheStorageMb = intPreferencesKey("max_cache_storage_mb")
+        val warnLowStorage = booleanPreferencesKey("warn_low_storage")
+        val logLevel = stringPreferencesKey("log_level")
     }
 }

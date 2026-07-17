@@ -42,6 +42,27 @@ class RuntimeResourceTracker(private val context: Context) {
     val snapshot: StateFlow<RuntimeResourceSnapshot> = _snapshot
 
     fun upsert(session: ManagedSession) { sessions[session.sessionId] = session; refresh() }
+    fun remove(sessionId: String) { sessions.remove(sessionId); refresh() }
+    fun replaceMetricsForSessions(rows: List<VirtualRuntimeSessionEntity>) {
+        val validIds = rows.map { it.sessionId }.toSet()
+        sessions.keys.removeIf { it !in validIds }
+        rows.forEach { row ->
+            val previous = sessions[row.sessionId]
+            sessions[row.sessionId] = ManagedSession(
+                sessionId = row.sessionId,
+                packageName = row.packageName,
+                label = previous?.label ?: row.packageName,
+                state = runCatching { SessionState.valueOf(row.state) }.getOrDefault(SessionState.ERROR),
+                startedAt = row.startedAt ?: row.createdAt,
+                lastActivityAt = row.lastActivityAt,
+                estimatedBytes = previous?.estimatedBytes ?: 0L,
+                basesOpen = previous?.basesOpen ?: 0,
+                pendingMessages = previous?.pendingMessages ?: 0,
+                isSaving = previous?.isSaving ?: false,
+            )
+        }
+        refresh()
+    }
     fun stop(sessionId: String) { sessions[sessionId]?.let { sessions[sessionId] = it.copy(state = SessionState.STOPPED, lastActivityAt = System.currentTimeMillis()) }; refresh() }
     fun stopAllPaused() { sessions.values.filter { it.state == SessionState.PAUSED && !it.isSaving }.forEach { stop(it.sessionId) } }
     fun allSessions(): List<ManagedSession> = sessions.values.sortedByDescending { it.lastActivityAt }
