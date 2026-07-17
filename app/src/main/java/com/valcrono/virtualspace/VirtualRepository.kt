@@ -2,8 +2,6 @@ package com.valcrono.virtualspace
 
 import android.content.Context
 import androidx.room.Room
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
 import com.valcrono.core.Sha256
 import com.valcrono.core.VLog
 import com.valcrono.vpm.*
@@ -13,7 +11,7 @@ import java.io.File
 import java.util.UUID
 
 class VirtualRepository(private val context: Context) {
-    val db: ValcronoDatabase = Room.databaseBuilder(context, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4).build()
+    val db: ValcronoDatabase = Room.databaseBuilder(context, ValcronoDatabase::class.java, "valcrono-virtualspace.db").fallbackToDestructiveMigration().build()
     private val storage = VirtualStorageManager(context.filesDir)
     fun packages(): Flow<List<VirtualPackageEntity>> = db.packages().observePackages()
     suspend fun getPackage(packageName: String, userId: Int) = db.packages().getPackage(packageName, userId)
@@ -62,13 +60,4 @@ class VirtualRepository(private val context: Context) {
 
     suspend fun verifyPackage(pkg: VirtualPackageEntity): Boolean { val ok = File(pkg.apkInternalPath).isFile && File(pkg.apkInternalPath).inputStream().use { Sha256.hex(it) } == pkg.sha256; if(!ok) db.packages().markDamaged(pkg.packageName,pkg.virtualUserId); return ok }
     fun storage() = storage
-}
-
-val MIGRATION_3_4 = object : Migration(3, 4) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS virtual_shared_permissions (packageName TEXT NOT NULL, virtualUserId INTEGER NOT NULL, permission TEXT NOT NULL, grantedAt INTEGER NOT NULL, grantedBy TEXT NOT NULL, PRIMARY KEY(packageName, virtualUserId, permission))")
-        db.execSQL("CREATE TABLE IF NOT EXISTS virtual_fs_access_log (id TEXT NOT NULL, virtualUserId INTEGER NOT NULL, packageName TEXT, role TEXT NOT NULL, virtualPath TEXT NOT NULL, operation TEXT NOT NULL, allowed INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id))")
-        db.execSQL("CREATE TABLE IF NOT EXISTS virtual_launch_tokens (token TEXT NOT NULL, virtualUserId INTEGER NOT NULL, packageName TEXT NOT NULL, activityName TEXT NOT NULL, createdAt INTEGER NOT NULL, consumedAt INTEGER, PRIMARY KEY(token))")
-        db.execSQL("UPDATE virtual_runtime_sessions SET state='STOPPED' WHERE state='RUNNING'")
-    }
 }

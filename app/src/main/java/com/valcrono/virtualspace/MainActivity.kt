@@ -78,6 +78,7 @@ import com.valcrono.core.MemoryProfile
 import com.valcrono.core.SessionState
 import com.valcrono.core.SettingAvailability
 import com.valcrono.core.VLog
+import com.valcrono.vproc.InMemoryLaunchTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -228,7 +229,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         when (destination) {
                             Destination.HOME -> HomeScreen(packages, snapshot, settings)
                             Destination.APPS -> AppsScreen(packages)
-                            Destination.FILES -> GlobalFileExplorer(packages, settings)
+                            Destination.FILES -> FileExplorer(selectedPackage ?: packages.firstOrNull())
                             Destination.PROCESSES -> ProcessScreen(snapshot, packages, settings)
                             Destination.SETTINGS -> SettingsScreen(settings, packages)
                             Destination.APP_SETTINGS -> PerAppSettingsScreen(selectedPackage)
@@ -252,7 +253,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         "Aplicación activa" to (resourceTracker.allSessions().firstOrNull { it.state == SessionState.ACTIVE }?.label ?: "Ninguna"),
                         "RAM usada por el host" to formatBytes(snapshot.hostPssBytes),
                         "Almacenamiento usado" to formatBytes(packages.sumOf { repository.storage().usedBytes(it.virtualUserId, it.packageName) }),
-                        "Mensajes pendientes" to "0",
+                        "Mensajes pendientes" to "Ver procesos",
                         "Último error" to "No disponible",
                     ),
                 )
@@ -295,14 +296,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     }
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Estado: ${sessionStateLabel(state)}")
-                    Text(if (state == SessionState.ACTIVE) "RAM del host compartida: ${formatBytes(snapshot.hostPssBytes)}" else "RAM actual: 0 MB · Sin proceso activo")
+                    Text("Estado: $state")
+                    Text("Uso estimado de RAM: ${formatBytes(snapshot.hostPssBytes)}")
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { openVirtual(pkg) },
-                        enabled = pkg.enabled && !pkg.damaged && pkg.compatibilityLevel == "COOPERATIVE_SUPPORTED" && pkg.entryPointClass != null,
+                        enabled = pkg.enabled && !pkg.damaged && pkg.compatibilityLevel != "UNSUPPORTED",
                         modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                     ) { Text("Abrir") }
                     OutlinedButton(onClick = { stopPackage(pkg) }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Detener") }
@@ -473,9 +474,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(session.label, style = MaterialTheme.typography.titleMedium)
                 Text("Aplicación: ${session.packageName}")
-                Text("Estado: ${sessionStateLabel(session.state)}")
+                Text("Estado: ${session.state}")
                 Text("Tiempo activa: ${(System.currentTimeMillis() - session.startedAt) / 1000} s")
-                Text(if (session.state == SessionState.ACTIVE) "RAM del host compartida: ${formatBytes(session.estimatedBytes)}" else "RAM actual: 0 MB · Sin proceso activo")
+                Text("Memoria estimada: ${formatBytes(session.estimatedBytes)}")
                 Text("Última actividad: ${date(session.lastActivityAt)}")
                 Text("Bases abiertas: ${session.basesOpen}")
                 Text("Mensajes pendientes: ${session.pendingMessages}")
@@ -524,33 +525,6 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     val logs = VLog.recent().joinToString("\n")
                     (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono logs", logs))
                 }) { Text("Copiar logs") }
-            }
-        }
-    }
-
-
-    @Composable
-    private fun GlobalFileExplorer(packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings) {
-        val vfs = remember(packages) { com.valcrono.virtualstorage.VirtualFileSystem(com.valcrono.virtualstorage.VirtualFsNamespace(filesDir) { packages.map { it.packageName } }) }
-        val path = explorerPath.ifBlank { "/" }
-        val node = runCatching { vfs.resolve(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrNull()
-        val children = runCatching { vfs.list(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrDefault(emptyList())
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            item {
-                Text("Sistema virtual", style = MaterialTheme.typography.headlineSmall)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema virtual", "Aplicaciones", "Compartido", "APKs", "Procesos").forEach { Text(it) } }
-                Text("Ruta virtual: $path")
-                Text("Breadcrumbs: " + path.split('/').filter { it.isNotBlank() }.scan("") { acc, part -> "$acc/$part" }.joinToString(" › ") { it.ifBlank { "/" } })
-                node?.let { Text("Tipo: ${it.type} · Tamaño: ${formatBytes(it.size)} · Fecha: ${date(if (it.modifiedAt > 0) it.modifiedAt else System.currentTimeMillis())} · Permisos virtuales: ${it.permissions} · Propietario virtual: ${it.owner} · Paquete asociado: ${it.packageName ?: "—"}") }
-                if (settings.developerMode) node?.physicalFile?.let { Text("Ruta física: ${it.absolutePath}") }
-                if (path != "/") Button(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("Arriba") }
-            }
-            items(children) { child ->
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(8.dp)) {
-                    Text("${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "📁" else "📄"} ${child.name}")
-                    Text("${child.type} · ${formatBytes(child.size)} · ${child.permissions} · ${child.owner} · ${child.packageName ?: "—"}")
-                    Button(onClick = { explorerPath = child.virtualPath }) { Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "Abrir" else "Ver") }
-                } }
             }
         }
     }
@@ -649,20 +623,16 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun launchVirtual(pkg: VirtualPackageEntity) {
-        val activity = pkg.entryPointClass ?: run { importStatus = "No ejecutable: entry point no declarado"; return }
-        if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
-        resourceTracker.upsert(ManagedSession(packageName = pkg.packageName, label = pkg.label, state = SessionState.STARTING, estimatedBytes = 0))
-        val token = java.util.UUID.randomUUID().toString()
-        kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
-            withContext(Dispatchers.IO) { repository.db.launchTokens().upsert(VirtualLaunchTokenEntity(token, pkg.virtualUserId, pkg.packageName, activity, System.currentTimeMillis(), null)) }
-            startActivity(
-                Intent(this@MainActivity, ProxyActivity::class.java)
-                    .putExtra("virtualUserId", pkg.virtualUserId)
-                    .putExtra("virtualPackageName", pkg.packageName)
-                    .putExtra("virtualActivityName", activity)
-                    .putExtra("launchToken", token),
-            )
-        }
+        val activity = pkg.mainActivity ?: pkg.entryPointClass ?: return
+        resourceTracker.upsert(ManagedSession(packageName = pkg.packageName, label = pkg.label, state = SessionState.ACTIVE, estimatedBytes = resourceTracker.snapshot.value.hostPssBytes))
+        val token = InMemoryLaunchTokens.create(pkg.virtualUserId, pkg.packageName, activity)
+        startActivity(
+            Intent(this, ProxyActivity::class.java)
+                .putExtra("virtualUserId", pkg.virtualUserId)
+                .putExtra("virtualPackageName", pkg.packageName)
+                .putExtra("virtualActivityName", activity)
+                .putExtra("launchToken", token),
+        )
     }
 
     private fun stopPackage(pkg: VirtualPackageEntity) {
@@ -875,9 +845,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
     }
 
-    private fun compatLabel(level: String): String = when (level) { "COOPERATIVE_SUPPORTED" -> "Cooperativa compatible"; "HIGH_RISK" -> "Riesgo alto"; "UNSUPPORTED" -> "No ejecutable"; "IMPORTED_NOT_RUNNABLE" -> "Importada · No compatible con runtime cooperativo"; else -> level }
-
-    private fun sessionStateLabel(state: SessionState): String = when (state) { SessionState.STOPPED -> "Detenida"; SessionState.STARTING -> "Iniciando"; SessionState.ACTIVE -> "Activa"; SessionState.PAUSED -> "Pausada"; SessionState.STOPPING -> "Deteniendo"; SessionState.ERROR -> "Error al iniciar"; SessionState.SAVING -> "Guardando" }
+    private fun compatLabel(level: String): String = if (level == "COOPERATIVE_SUPPORTED") "Cooperativa compatible" else level
 
     private fun MemoryProfile.displayName(): String = when (this) {
         MemoryProfile.AUTOMATIC -> "Automático"
