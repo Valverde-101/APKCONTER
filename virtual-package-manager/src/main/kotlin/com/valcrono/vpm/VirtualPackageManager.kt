@@ -11,7 +11,7 @@ import java.util.zip.ZipException
 import java.util.zip.ZipFile
 
 enum class ComponentType { ACTIVITY, SERVICE, PROVIDER, RECEIVER }
-enum class CompatibilityLevel { COOPERATIVE_SUPPORTED, COMPATIBLE, LIMITED, HIGH_RISK, UNSUPPORTED }
+enum class CompatibilityLevel { COMPATIBLE, LIMITED, HIGH_RISK, UNSUPPORTED }
 
 data class VirtualPackage(
     val packageName: String,
@@ -62,9 +62,6 @@ data class ApkMetadata(
     val usesDeviceAdmin: Boolean = false,
     val usesVpn: Boolean = false,
     val usesPlayIntegrity: Boolean = false,
-    val entryPointClass: String? = null,
-    val entryPointImplementsInterface: Boolean = false,
-    val signingCertificateSha256: String? = null,
 )
 
 data class ApkLimits(
@@ -170,8 +167,6 @@ class ApkMetadataParser {
             usesDeviceAdmin = usesDeviceAdmin,
             usesVpn = usesVpn,
             usesPlayIntegrity = usesIntegrity,
-            entryPointClass = null,
-            entryPointImplementsInterface = false,
         )
     }
 }
@@ -182,9 +177,8 @@ class CompatibilityScanner {
         fun issue(level: CompatibilityLevel, code: String, message: String) {
             issues += CompatibilityIssue(metadata.packageName, level, code, message)
         }
-        val hostAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
-        if (metadata.hasNativeLibraries && metadata.primaryAbi !in hostAbis) issue(CompatibilityLevel.UNSUPPORTED, "ABI_UNSUPPORTED", "Native ABI ${metadata.primaryAbi} is not supported")
-        if (metadata.entryPointClass == null && metadata.components.none { it.type == ComponentType.ACTIVITY }) issue(CompatibilityLevel.UNSUPPORTED, "NO_ACTIVITY", "No launchable activity or cooperative entry point detected")
+        if (metadata.hasNativeLibraries && metadata.primaryAbi != "arm64-v8a") issue(CompatibilityLevel.UNSUPPORTED, "ABI_UNSUPPORTED", "Native ABI ${metadata.primaryAbi} is not arm64-v8a")
+        if (metadata.components.none { it.type == ComponentType.ACTIVITY }) issue(CompatibilityLevel.UNSUPPORTED, "NO_ACTIVITY", "No launchable activity detected")
         if (metadata.hasSplitMarker) issue(CompatibilityLevel.UNSUPPORTED, "SPLIT_APK", "Split APK/App Bundle artifacts are not supported in Phase 1")
         if (metadata.components.any { it.type == ComponentType.SERVICE }) issue(CompatibilityLevel.LIMITED, "HAS_SERVICES", "Services are virtualized in Phase 2")
         if (metadata.components.any { it.type == ComponentType.PROVIDER }) issue(CompatibilityLevel.LIMITED, "HAS_PROVIDERS", "Providers are virtualized in Phase 2")
@@ -199,17 +193,7 @@ class CompatibilityScanner {
         if (metadata.usesDeviceAdmin) issue(CompatibilityLevel.HIGH_RISK, "DEVICE_ADMIN", "DeviceAdmin cannot be virtualized safely in Phase 1")
         if (metadata.usesVpn) issue(CompatibilityLevel.HIGH_RISK, "VPN_SERVICE", "VPN service cannot be virtualized safely in Phase 1")
         if (metadata.usesPlayIntegrity) issue(CompatibilityLevel.HIGH_RISK, "PLAY_INTEGRITY", "Play Integrity is not supported by this private container")
-        val cooperativeBlocked = issues.any { it.severity == CompatibilityLevel.UNSUPPORTED || it.severity == CompatibilityLevel.HIGH_RISK || it.code in setOf("HAS_SERVICES", "HAS_PROVIDERS") }
-        val cooperative = metadata.entryPointClass != null && metadata.entryPointImplementsInterface && !cooperativeBlocked && metadata.signingCertificateSha256 != null
-        if (cooperative) {
-            issue(CompatibilityLevel.COOPERATIVE_SUPPORTED, "COOPERATIVE_RUNTIME", "Runtime cooperativo compatible")
-            issue(CompatibilityLevel.COOPERATIVE_SUPPORTED, "ENTRY_POINT_FOUND", "Entry point encontrado")
-            issue(CompatibilityLevel.COOPERATIVE_SUPPORTED, "NO_NATIVE_LIBS", if (metadata.hasNativeLibraries) "ABI compatible" else "Sin librerías nativas")
-            issue(CompatibilityLevel.COOPERATIVE_SUPPORTED, "NO_GMS", "Sin Google Play Services")
-            issue(CompatibilityLevel.COOPERATIVE_SUPPORTED, "NO_MULTIPROCESS", "Sin multiproceso")
-            return CompatibilityLevel.COOPERATIVE_SUPPORTED to issues
-        }
-        val level = issues.filter { it.severity != CompatibilityLevel.COOPERATIVE_SUPPORTED }.maxByOrNull { it.severity.ordinal }?.severity ?: CompatibilityLevel.COMPATIBLE
+        val level = issues.maxByOrNull { it.severity.ordinal }?.severity ?: CompatibilityLevel.COMPATIBLE
         return level to issues
     }
 }
