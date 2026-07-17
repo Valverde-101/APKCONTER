@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -55,6 +56,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Slider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -118,6 +121,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     private lateinit var settingsStore: VirtualSpaceSettingsStore
     private lateinit var resourceTracker: RuntimeResourceTracker
     private lateinit var sessionManager: VirtualSessionManager
+    private lateinit var runtimeSessions: RuntimeSessionRepository
+    private lateinit var runtimeController: RuntimeSessionController
+    private lateinit var runtimeMetrics: RuntimeMetricsRepository
 
     private var destination by mutableStateOf(Destination.HOME)
     private var selectedPackage by mutableStateOf<VirtualPackageEntity?>(null)
@@ -159,7 +165,10 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         settingsStore = VirtualSpaceSettingsStore(applicationContext)
         resourceTracker = RuntimeResourceTracker(applicationContext)
         sessionManager = VirtualSessionManager(resourceTracker)
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().cleanupStarting(System.currentTimeMillis()) }
+        runtimeMetrics = RuntimeMetricsRepository(resourceTracker)
+        runtimeSessions = RuntimeSessionRepository(repository.db)
+        runtimeController = RuntimeSessionController(runtimeSessions, repository.db, runtimeMetrics)
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileStartup() }
         setContent { AppUi() }
     }
 
@@ -169,6 +178,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val settings by settingsStore.settings.collectAsState(initial = VirtualSpaceSettings())
         val snapshot by resourceTracker.snapshot.collectAsState()
         var packages by remember { mutableStateOf<List<VirtualPackageEntity>>(emptyList()) }
+        var sessions by remember { mutableStateOf<List<VirtualRuntimeSessionEntity>>(emptyList()) }
+        val snackbarHostState = remember { SnackbarHostState() }
         val widthClass = calculateWindowSizeClass(this).widthSizeClass
         val wide = widthClass != WindowWidthSizeClass.Compact
 
@@ -177,10 +188,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
         LaunchedEffect(Unit) {
             repository.sessions().collectLatest { rows ->
-                rows.forEach { row ->
-                    val label = packages.firstOrNull { it.packageName == row.packageName }?.label ?: row.packageName
-                    resourceTracker.upsert(ManagedSession(sessionId = row.sessionId, packageName = row.packageName, label = label, state = runCatching { SessionState.valueOf(row.state) }.getOrDefault(SessionState.ERROR), startedAt = row.startedAt ?: row.createdAt, lastActivityAt = row.lastActivityAt, estimatedBytes = snapshot.hostPssBytes))
-                }
+                sessions = rows
+                runtimeMetrics.replaceMetricsForSessions(rows)
+            }
+        }
+        LaunchedEffect(Unit) {
+            while (true) {
+                withContext(Dispatchers.IO) { runtimeController.watchdogTick() }
+                delay(1000)
             }
         }
         LaunchedEffect(destination) {
@@ -206,12 +221,13 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         title = {
                             Column {
                                 Text("Valcrono VirtualSpace", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Estado general: ${importStatus.take(48)}", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("Estado general: Normal", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         },
                         actions = { TextButton(onClick = { destination = Destination.SETTINGS }) { Text("Menú") } },
                     )
                 },
+                snackbarHost = { SnackbarHost(snackbarHostState) },
                 bottomBar = {
                     if (!wide) {
                         NavigationBar {
@@ -242,10 +258,10 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     }
                     Box(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                         when (destination) {
-                            Destination.HOME -> HomeScreen(packages, snapshot, settings)
-                            Destination.APPS -> AppsScreen(packages)
+                            Destination.HOME -> HomeScreen(packages, snapshot, settings, sessions)
+                            Destination.APPS -> AppsScreen(packages, sessions)
                             Destination.FILES -> GlobalFileExplorer(packages, settings)
-                            Destination.PROCESSES -> ProcessScreen(snapshot, packages, settings)
+                            Destination.PROCESSES -> ProcessScreen(snapshot, packages, settings, sessions)
                             Destination.SETTINGS -> SettingsScreen(settings, packages)
                             Destination.APP_SETTINGS -> PerAppSettingsScreen(selectedPackage)
                             Destination.APP_DIAG -> AppDiagnostics(selectedPackage)
@@ -272,7 +288,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     @Composable
-    private fun HomeScreen(packages: List<VirtualPackageEntity>, snapshot: RuntimeResourceSnapshot, settings: VirtualSpaceSettings) {
+    private fun HomeScreen(packages: List<VirtualPackageEntity>, snapshot: RuntimeResourceSnapshot, settings: VirtualSpaceSettings, sessions: List<VirtualRuntimeSessionEntity>) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item { if (!settings.firstRunComplete) FirstRunCard() }
             item {
@@ -280,7 +296,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     title = "Resumen",
                     rows = listOf(
                         "Aplicaciones instaladas" to packages.size.toString(),
-                        "Aplicación activa" to (resourceTracker.allSessions().firstOrNull { it.state == SessionState.ACTIVE }?.label ?: "Ninguna"),
+                        "Aplicación activa" to (sessions.firstOrNull { it.state == "ACTIVE" }?.packageName ?: "Ninguna"),
                         "RAM usada por el host" to formatBytes(snapshot.hostPssBytes),
                         "Almacenamiento usado" to formatBytes(packages.sumOf { repository.storage().usedBytes(it.virtualUserId, it.packageName) }),
                         "Mensajes pendientes" to "0",
@@ -295,7 +311,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     @Composable
-    private fun AppsScreen(packages: List<VirtualPackageEntity>) {
+    private fun AppsScreen(packages: List<VirtualPackageEntity>, sessions: List<VirtualRuntimeSessionEntity>) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -304,16 +320,16 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { destination = Destination.PROCESSES }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Procesos") }
                 }
             }
-            items(packages) { pkg -> AppCard(pkg) }
+            items(packages) { pkg -> AppCard(pkg, sessions.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }) }
         }
     }
 
     @Composable
-    private fun AppCard(pkg: VirtualPackageEntity) {
+    private fun AppCard(pkg: VirtualPackageEntity, session: VirtualRuntimeSessionEntity?) {
         var menuExpanded by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         val snapshot by resourceTracker.snapshot.collectAsState()
-        val state = resourceTracker.allSessions().firstOrNull { it.packageName == pkg.packageName }?.state ?: SessionState.STOPPED
+        val state = session?.state?.let { runCatching { SessionState.valueOf(it) }.getOrNull() } ?: SessionState.STOPPED
         Card(Modifier.fillMaxWidth().semantics { contentDescription = "Aplicación ${pkg.label}" }) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -341,8 +357,13 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         Text("APK disponible para inspección; runtime no compatible.")
                         Button(onClick = { selectedPackage = pkg; explorerPath = "/data/app/${pkg.packageName}/base.apk"; destination = Destination.FILES }) { Text("Inspeccionar") }
                     }
-                    if (state == SessionState.STARTING) OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar inicio") }
-                    OutlinedButton(onClick = { stopPackage(pkg) }, enabled = state != SessionState.STOPPED, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Detener") }
+                    when (state) {
+                        SessionState.STARTING -> OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar") }
+                        SessionState.ACTIVE -> { OutlinedButton(onClick = { pausePackage(pkg) }) { Text("Pausar") }; OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Detener") } }
+                        SessionState.PAUSED -> { OutlinedButton(onClick = { openVirtual(pkg) }) { Text("Reanudar") }; OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Detener") } }
+                        SessionState.ERROR -> OutlinedButton(onClick = { importStatus = session?.sanitizedError ?: "Error no disponible" }) { Text("Ver error") }
+                        else -> Unit
+                    }
                     OutlinedButton(
                         onClick = {
                             selectedPackage = pkg
@@ -390,16 +411,16 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             }
             item { SettingsSection("Aplicaciones virtuales") {
                 Text("Máximo de apps activas")
-                Slider(value = settings.maxActiveApps.toFloat(), onValueChange = {}, valueRange = 1f..3f, steps = 1)
+                Slider(value = settings.maxActiveApps.toFloat(), onValueChange = { scope.launch { settingsStore.setMaxActiveApps(it.toInt()) } }, valueRange = 1f..3f, steps = 1)
                 Text("${settings.maxActiveApps} app activa")
                 Text("Qué hacer al abrir otra app")
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Preguntar", "Pausar actual", "Detener actual", "Impedir apertura").forEach { FilterChip(selected = it == "Pausar actual", onClick = {}, label = { Text(it) }) } }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Preguntar" to com.valcrono.core.OpenAnotherAppPolicy.ASK, "Pausar actual" to com.valcrono.core.OpenAnotherAppPolicy.PAUSE_CURRENT, "Detener actual" to com.valcrono.core.OpenAnotherAppPolicy.STOP_CURRENT, "Impedir apertura" to com.valcrono.core.OpenAnotherAppPolicy.BLOCK).forEach { (label, policy) -> FilterChip(selected = settings.openAnotherAppPolicy == policy, onClick = { scope.launch { settingsStore.setOpenAnotherAppPolicy(policy) } }, label = { Text(label) }) } }
             } }
             item { SettingsSection("Almacenamiento") {
                 SettingSwitch("Eliminar caché automáticamente", settings.autoDeleteCache) { scope.launch { settingsStore.setBool("auto_delete_cache", it) } }
                 Text("Caché máxima total")
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("64 MB", "128 MB", "256 MB", "512 MB", "Personalizado").forEach { FilterChip(selected = it == "256 MB", onClick = {}, label = { Text(it) }) } }
-                SettingSwitch("Advertir cuando quede poco espacio", settings.warnLowStorage) {}
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf(64, 128, 256, 512).forEach { mb -> FilterChip(selected = settings.maxCacheStorageMb == mb, onClick = { scope.launch { settingsStore.setMaxCacheStorageMb(mb) } }, label = { Text("$mb MB") }) } }
+                SettingSwitch("Advertir cuando quede poco espacio", settings.warnLowStorage) { scope.launch { settingsStore.setWarnLowStorage(it) } }
             } }
             item { SettingsSection("Interfaz") {
                 Text("Tema")
@@ -414,7 +435,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             item { SettingsSection("Copias de seguridad") { SettingSwitch("Incluir APK en exportación", settings.includeApkInExport) { scope.launch { settingsStore.setBool("include_apk_export", it) } }; SettingSwitch("Incluir caché", settings.includeCacheInExport) { scope.launch { settingsStore.setBool("include_cache_export", it) } }; SettingSwitch("Incluir logs", settings.includeLogsInExport) { scope.launch { settingsStore.setBool("include_logs_export", it) } }; SettingSwitch("Verificación SHA-256", settings.backupSha256) { scope.launch { settingsStore.setBool("backup_sha256", it) } }; SettingSwitch("Backup antes de borrar", settings.backupBeforeDelete) { scope.launch { settingsStore.setBool("backup_before_delete", it) } } } }
             item { SettingsSection("Seguridad") { settingsText("Bloqueo mediante PIN: No implementada", "Desbloqueo biométrico: No implementada", "Impedir capturas en pantallas sensibles: ${settings.flagSecureEnabled}", "Registro de acciones administrativas: ${settings.adminActionLog}") } }
             item { SettingsSection("Diagnóstico") { deviceDiagnostics(packages).forEach { Text("${it.first}: ${it.second}") } } }
-            item { SettingsSection("Desarrollador") { SettingSwitch("Modo desarrollador", settings.developerMode) { scope.launch { settingsStore.setDeveloperMode(it) } }; Text("Nivel de logs"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Error", "Información", "Depuración").forEach { FilterChip(selected = settings.logLevel == it, onClick = {}, label = { Text(it) }) } }; SettingSwitch("Mostrar stack traces", settings.showStackTraces) { scope.launch { settingsStore.setBool("show_stack_traces", it) } } } }
+            item { SettingsSection("Desarrollador") { SettingSwitch("Modo desarrollador", settings.developerMode) { scope.launch { settingsStore.setDeveloperMode(it) } }; Text("Nivel de logs"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Error", "Información", "Depuración").forEach { level -> FilterChip(selected = settings.logLevel == level, onClick = { scope.launch { settingsStore.setLogLevel(level) } }, label = { Text(level) }) } }; SettingSwitch("Mostrar stack traces", settings.showStackTraces) { scope.launch { settingsStore.setBool("show_stack_traces", it) } } } }
             item { SettingsSection("Acerca de") { settingsText("Nombre: Valcrono VirtualSpace", "Versión: ${BuildConfig.VERSION_NAME}", "Código de versión: ${BuildConfig.VERSION_CODE}", "Commit del build: ${BuildConfig.GIT_COMMIT}", "Fecha de compilación: ${BuildConfig.BUILD_DATE}", "Tipo de build: ${BuildConfig.BUILD_TYPE}", "SDK objetivo: 35", "Estado del runtime: PROTOTIPO FUNCIONAL PARA APPS COOPERATIVAS") } }
             item {
                 SettingsSection("Restablecimiento") {
@@ -500,7 +521,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     @Composable
-    private fun ProcessScreen(snapshot: RuntimeResourceSnapshot, packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings) {
+    private fun ProcessScreen(snapshot: RuntimeResourceSnapshot, packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings, sessions: List<VirtualRuntimeSessionEntity>) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item { Text("Procesos y memoria", style = MaterialTheme.typography.headlineSmall) }
             item {
@@ -527,25 +548,24 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { runMemoryCleanup(settings) }) { Text("Ejecutar limpieza") }
                 }
             }
-            items(resourceTracker.allSessions()) { session -> SessionCard(session) }
+            items(sessions) { session -> SessionCard(session, packages.firstOrNull { it.packageName == session.packageName }?.label ?: session.packageName) }
         }
     }
 
     @Composable
-    private fun SessionCard(session: ManagedSession) {
+    private fun SessionCard(session: VirtualRuntimeSessionEntity, label: String) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(session.label, style = MaterialTheme.typography.titleMedium)
+                val state = runCatching { SessionState.valueOf(session.state) }.getOrDefault(SessionState.ERROR)
+                Text(label, style = MaterialTheme.typography.titleMedium)
                 Text("Aplicación: ${session.packageName}")
-                Text("Estado: ${sessionStateLabel(session.state)}")
-                Text("Tiempo activa: ${(System.currentTimeMillis() - session.startedAt) / 1000} s")
-                Text(if (session.state == SessionState.ACTIVE) "RAM del host compartida: ${formatBytes(session.estimatedBytes)}" else "RAM actual: 0 MB · Sin proceso activo")
+                Text("Estado: ${sessionStateLabel(state)}")
+                Text("Tiempo activa: ${(System.currentTimeMillis() - (session.startedAt ?: session.createdAt)) / 1000} s")
                 Text("Última actividad: ${date(session.lastActivityAt)}")
-                Text("Bases abiertas: ${session.basesOpen}")
-                Text("Mensajes pendientes: ${session.pendingMessages}")
+                session.sanitizedError?.let { Text("Error: $it") }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { resourceTracker.upsert(session.copy(state = SessionState.PAUSED)) }) { Text("Pausar") }
-                    Button(onClick = { resourceTracker.stop(session.sessionId) }) { Text("Detener") }
+                    if (state == SessionState.ACTIVE) Button(onClick = { pausePackageBySession(session) }) { Text("Pausar") }
+                    if (state != SessionState.STOPPED) Button(onClick = { stopPackageBySession(session) }) { Text("Detener") }
                 }
             }
         }
@@ -601,10 +621,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val children = runCatching { vfs.list(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrDefault(emptyList())
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
-                Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("←") }; Column { Text("Archivos", style = MaterialTheme.typography.headlineSmall); Text(path, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.weight(1f)); TextButton(onClick = {}) { Text("Buscar") }; TextButton(onClick = {}) { Text("Vista") }; IconButton(onClick = {}) { Text("⋮") } }
+                TopAppBar(
+                    title = { Column { Text("Archivos", maxLines = 1, overflow = TextOverflow.Ellipsis); Text(path, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) } },
+                    navigationIcon = { IconButton(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("←") } },
+                    actions = { IconButton(onClick = { importStatus = "Búsqueda preparada para $path" }) { Text("🔍") }; IconButton(onClick = {}) { Text("▦") }; IconButton(onClick = {}) { Text("⋮") } },
+                )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema", "Apps", "Compartido", "APKs", "Procesos").forEach { FilterChip(selected = false, onClick = {}, label = { Text(it) }) } }
                 if (path == "/") FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { mapOf("Datos privados" to "/data/data", "Datos externos" to "/storage/emulated/0/Android/data", "Almacenamiento compartido" to "/storage/emulated/0", "APKs instalados" to "/data/app", "Bases de datos" to "/data/data", "Preferencias" to "/data/data", "Caché" to "/data/data", "Procesos" to "/proc").forEach { (label, target) -> Button(onClick = { explorerPath = target }) { Text(label) } } }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { listOf("Raíz") .plus(path.split('/').filter { it.isNotBlank() }).forEachIndexed { index, crumb -> FilterChip(selected = false, onClick = { explorerPath = if (index == 0) "/" else "/" + path.split('/').filter { it.isNotBlank() }.take(index).joinToString("/") }, label = { Text(crumb) }) } }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { items(listOf("Raíz").plus(path.split('/').filter { it.isNotBlank() })) { crumb -> val parts = path.split('/').filter { it.isNotBlank() }; val index = listOf("Raíz").plus(parts).indexOf(crumb); FilterChip(selected = false, onClick = { explorerPath = if (index == 0) "/" else "/" + parts.take(index).joinToString("/") }, label = { Text(crumb, maxLines = 1) }) } }
                 Text("${children.size} elementos")
                 node?.let { Text("Tipo: ${it.type} · Tamaño: ${formatBytes(it.size)} · Fecha: ${date(if (it.modifiedAt > 0) it.modifiedAt else System.currentTimeMillis())} · Permisos virtuales: ${it.permissions} · Propietario virtual: ${it.owner} · Paquete asociado: ${it.packageName ?: "—"}") }
                 if (settings.developerMode) node?.physicalFile?.let { Text("Ruta física: ${it.absolutePath}") }
@@ -719,12 +743,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
         val token = java.util.UUID.randomUUID().toString()
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
-            withContext(Dispatchers.IO) {
-                repository.db.runtime().timeoutStarting(System.currentTimeMillis() - 15_000, System.currentTimeMillis())
-                repository.db.runtime().deleteFinalizedFor(pkg.packageName, pkg.virtualUserId)
-                repository.db.runtime().upsert(VirtualRuntimeSessionEntity(token, pkg.packageName, pkg.virtualUserId, "STARTING", System.currentTimeMillis(), null, System.currentTimeMillis(), null, Process.myPid(), activity, "PENDING", null, null))
-                repository.db.launchTokens().upsert(VirtualLaunchTokenEntity(token, pkg.virtualUserId, pkg.packageName, activity, System.currentTimeMillis(), null))
+            val shouldStart = withContext(Dispatchers.IO) {
+                val row = runtimeController.prepareLaunch(pkg, token, activity)
+                row.sessionId == token && row.state == "STARTING"
             }
+            if (!shouldStart) { importStatus = "Sesión existente reutilizada: ${pkg.label}"; return@launch }
             startActivity(
                 Intent(this@MainActivity, ProxyActivity::class.java)
                     .putExtra("virtualUserId", pkg.virtualUserId)
@@ -736,12 +759,25 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun stopPackage(pkg: VirtualPackageEntity) {
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)?.let { repository.db.runtime().updateState(it.sessionId, "STOPPED", System.currentTimeMillis(), null, null) } }
-        resourceTracker.allSessions().filter { it.packageName == pkg.packageName }.forEach { resourceTracker.stop(it.sessionId) }
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeController.stop(pkg.packageName, pkg.virtualUserId) }
         importStatus = "Sesión detenida: ${pkg.label}"
     }
 
+    private fun pausePackage(pkg: VirtualPackageEntity) {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)?.let { repository.db.runtime().updateState(it.sessionId, "PAUSED", System.currentTimeMillis(), null, null) } }
+        importStatus = "Sesión pausada: ${pkg.label}"
+    }
+
+    private fun stopPackageBySession(session: VirtualRuntimeSessionEntity) {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().updateState(session.sessionId, "STOPPED", System.currentTimeMillis(), null, null); runtimeMetrics.removeMetrics(session.sessionId) }
+    }
+
+    private fun pausePackageBySession(session: VirtualRuntimeSessionEntity) {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().updateState(session.sessionId, "PAUSED", System.currentTimeMillis(), null, null) }
+    }
+
     private fun closeAllSessions() {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().stopAll(System.currentTimeMillis()) }
         resourceTracker.allSessions().forEach { resourceTracker.stop(it.sessionId) }
         importStatus = "Todas las sesiones se marcaron como detenidas"
     }
@@ -975,7 +1011,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     private fun boolLabel(value: Boolean): String = if (value) "Activado" else "Desactivado"
 
-    private fun openPolicyLabel(policy: com.valcrono.core.OpenAnotherAppPolicy): String = when (policy.name) { "ASK" -> "Preguntar"; "PAUSE_CURRENT" -> "Pausar la aplicación actual"; "STOP_CURRENT" -> "Detener la aplicación actual"; "BLOCK_NEW" -> "Impedir apertura"; else -> policy.name }
+    private fun openPolicyLabel(policy: com.valcrono.core.OpenAnotherAppPolicy): String = when (policy.name) { "ASK" -> "Preguntar"; "PAUSE_CURRENT" -> "Pausar la aplicación actual"; "STOP_CURRENT" -> "Detener la aplicación actual"; "BLOCK" -> "Impedir apertura"; else -> policy.name }
 
     private fun sessionStateLabel(state: SessionState): String = when (state) { SessionState.STOPPED -> "Detenida"; SessionState.STARTING -> "Iniciando"; SessionState.ACTIVE -> "Activa"; SessionState.PAUSED -> "Pausada"; SessionState.STOPPING -> "Deteniendo"; SessionState.ERROR -> "Error al iniciar"; SessionState.SAVING -> "Guardando" }
 
@@ -993,10 +1029,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         SettingAvailability.NOT_IMPLEMENTED -> "No implementada"
     }
 
-    private fun formatBytes(bytes: Long): String = if (bytes >= 1024L * 1024 * 1024) {
-        String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
-    } else {
-        String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024))
+    private fun formatBytes(bytes: Long): String = when {
+        bytes < 1024L -> "$bytes B"
+        bytes < 1024L * 1024 -> String.format(Locale.US, "%.2f KB", bytes / 1024.0)
+        bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024))
+        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
     }
 
     private fun date(ms: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(ms))

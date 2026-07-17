@@ -37,8 +37,9 @@ class ProxyActivity : Activity() {
             VLog.i("ProxyActivity", "started cooperative runtime package=$packageName entry=${pkg.entryPointClass}")
         } catch (t: Throwable) {
             VLog.e("ProxyActivity", "runtime launch failed package=$packageName error=${t.message}", t)
-            runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().updateState(token, "ERROR", System.currentTimeMillis(), "RUNTIME_INITIALIZATION_FAILED", (t.message ?: "RUNTIME_INITIALIZATION_FAILED").take(500)) } }
-            renderError(t.message ?: "RUNTIME_INITIALIZATION_FAILED")
+            val code = launchErrorCode(t)
+            runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().updateState(token, "ERROR", System.currentTimeMillis(), code, sanitizeLaunchError(t)) } }
+            renderError(sanitizeLaunchError(t))
         }
     }
 
@@ -64,9 +65,29 @@ class ProxyActivity : Activity() {
     }
 
     private fun renderError(message: String) { container.removeAllViews(); container.addView(TextView(this).apply { text = message }) }
+    private fun launchErrorCode(t: Throwable): String {
+        val message = t.message.orEmpty()
+        return listOf("LAUNCH_TOKEN_INVALID", "PACKAGE_NOT_REGISTERED", "PACKAGE_DISABLED_OR_DAMAGED", "APK_HASH_MISMATCH", "ENTRY_POINT_NOT_DECLARED", "ENTRY_POINT_CLASS_NOT_FOUND", "ENTRY_POINT_INTERFACE_MISMATCH").firstOrNull { message.contains(it) } ?: "RUNTIME_INITIALIZATION_FAILED"
+    }
+    private fun sanitizeLaunchError(t: Throwable): String = when (launchErrorCode(t)) {
+        "LAUNCH_TOKEN_INVALID" -> "Token de inicio inválido o vencido. Vuelve a abrir la app."
+        "PACKAGE_NOT_REGISTERED" -> "La APK no está registrada en VirtualSpace."
+        "PACKAGE_DISABLED_OR_DAMAGED" -> "La APK está deshabilitada o marcada como dañada."
+        "APK_HASH_MISMATCH" -> "El hash del APK no coincide con el importado."
+        "ENTRY_POINT_NOT_DECLARED" -> "La APK no declara entry point cooperativo."
+        "ENTRY_POINT_CLASS_NOT_FOUND" -> "No se encontró la clase entry point."
+        "ENTRY_POINT_INTERFACE_MISMATCH" -> "El entry point no implementa la interfaz requerida."
+        else -> (t.message ?: "No se pudo inicializar el runtime.").take(500)
+    }
     override fun onStart() { super.onStart(); if (::running.isInitialized) runCatching { running.entry.onStart() } }
-    override fun onResume() { super.onResume(); if (::running.isInitialized) runCatching { running.entry.onResume() } }
-    override fun onPause() { if (::running.isInitialized) runCatching { running.entry.onPause() }; super.onPause() }
+    override fun onResume() { super.onResume(); if (::running.isInitialized) { runCatching { running.entry.onResume() }; runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().updateState(intent.getStringExtra("launchToken").orEmpty(), "ACTIVE", System.currentTimeMillis(), null, null) } } } }
+    override fun onPause() { if (::running.isInitialized) { runCatching { running.entry.onPause() }; if (!isChangingConfigurations && !isFinishing) runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().updateState(intent.getStringExtra("launchToken").orEmpty(), "PAUSED", System.currentTimeMillis(), null, null) } } }; super.onPause() }
     override fun onStop() { if (::running.isInitialized) runCatching { running.entry.onStop() }; super.onStop() }
-    override fun onDestroy() { if (::running.isInitialized) runCatching { running.entry.onDestroy() }; runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().updateState(intent.getStringExtra("launchToken").orEmpty(), "STOPPED", System.currentTimeMillis(), null, null) } }; super.onDestroy() }
+    override fun onDestroy() {
+        if (::running.isInitialized) runCatching { running.entry.onDestroy() }
+        if (::running.isInitialized && isFinishing && !isChangingConfigurations) {
+            runCatching { runBlocking { VirtualRepository(applicationContext).db.runtime().updateState(intent.getStringExtra("launchToken").orEmpty(), "STOPPED", System.currentTimeMillis(), null, null) } }
+        }
+        super.onDestroy()
+    }
 }
