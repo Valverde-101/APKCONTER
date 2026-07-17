@@ -4,7 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
-import java.nio.file.Files
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import com.valcrono.virtualstorage.VirtualStorageManager
@@ -47,7 +46,7 @@ class ScannerTest {
     }
 
     @Test fun importerStoresUnsupportedAbiInsteadOfRejecting() {
-        val tempDir = Files.createTempDirectory("vpm-test").toFile()
+        val tempDir = createTempDir(prefix = "vpm-test")
         try {
             val apk = File(tempDir, "unsupported.apk")
             ZipOutputStream(apk.outputStream()).use { zip ->
