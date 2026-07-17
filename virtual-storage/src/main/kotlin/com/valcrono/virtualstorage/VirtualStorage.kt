@@ -6,7 +6,7 @@ import java.io.File
 private val PACKAGE_NAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")
 
 data class VirtualStorageMetadata(val packageName: String, val virtualUserId: Int, val virtualUid: Int, val root: File)
-data class VirtualStorageQuota(val maxBytes: Long = 512L * 1024 * 1024)
+data class VirtualStorageQuota(val maxBytes: Long? = 512L * 1024 * 1024)
 data class VirtualStoragePolicy(val quota: VirtualStorageQuota = VirtualStorageQuota())
 
 class VirtualPathResolver(private val base: File) {
@@ -66,8 +66,14 @@ class VirtualStorageManager(
         resolver.packageRoot(userId, packageName).walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
     fun ensureQuota(userId: Int, packageName: String, incomingBytes: Long = 0) {
-        val projected = usedBytes(userId, packageName) + incomingBytes
-        require(projected <= policy.quota.maxBytes) { "Virtual storage quota exceeded: $projected > ${policy.quota.maxBytes}" }
+        val current = usedBytes(userId, packageName)
+        val projected = current + incomingBytes
+        val deviceFree = filesDir.usableSpace
+        val safetyMargin = 64L * 1024 * 1024
+        policy.quota.maxBytes?.let { maxBytes ->
+            require(projected <= maxBytes) { "Cuota de almacenamiento excedida: $projected > $maxBytes" }
+        }
+        require(deviceFree - incomingBytes >= safetyMargin) { "Espacio insuficiente en el dispositivo para completar la operación" }
     }
 
     fun clearCache(userId: Int, packageName: String) {

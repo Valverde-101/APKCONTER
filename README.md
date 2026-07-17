@@ -1,5 +1,13 @@
 # Valcrono VirtualSpace
 
+Estado de la fase actual: **PROTOTIPO FUNCIONAL PARA APPS COOPERATIVAS**.
+
+Esta iteración añade interfaz adaptable, ajustes persistidos con DataStore, perfiles de rendimiento basados en **presupuesto de memoria**, monitor de procesos/memoria, políticas LRU de sesiones, cuotas de almacenamiento y administración de cachés regenerables. El presupuesto de memoria es un objetivo administrado por VirtualSpace; Android conserva el control final de memoria y puede finalizar procesos cuando lo necesite.
+
+No se declara compatibilidad universal con APK arbitrarios, root virtual completo, GameGuardian, Parallel Space ni VMOS completo. La Fase 1A y Fase 1B cooperativa se marcarán como funcionales cuando pasen las pruebas instrumentadas en dispositivo real.
+
+# Valcrono VirtualSpace
+
 Prototipo Fase 1 de un contenedor Android privado sin root para importar APKs simples, registrar metadatos, crear almacenamiento virtual y lanzar una `ProxyActivity` mínima.
 
 ## Módulos
