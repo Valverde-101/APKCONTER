@@ -13,7 +13,7 @@ import java.io.File
 import java.util.UUID
 
 class VirtualRepository(private val context: Context) {
-    val db: ValcronoDatabase = Room.databaseBuilder(context, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5).build()
+    val db: ValcronoDatabase = Room.databaseBuilder(context, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
     private val storage = VirtualStorageManager(context.filesDir)
     fun packages(): Flow<List<VirtualPackageEntity>> = db.packages().observePackages()
     fun sessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
@@ -86,5 +86,20 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
         db.execSQL("UPDATE virtual_runtime_sessions SET state='ERROR', errorCode='ERROR_STALE_STARTING', sanitizedError='Inicio anterior limpiado al actualizar VirtualSpace.' WHERE state='STARTING'")
         db.execSQL("ALTER TABLE virtual_packages ADD COLUMN runtimeMode TEXT NOT NULL DEFAULT 'COOPERATIVE'")
         db.execSQL("UPDATE virtual_packages SET runtimeMode=CASE WHEN entryPointClass IS NULL THEN 'INSPECTION_ONLY' ELSE 'COOPERATIVE' END")
+    }
+}
+
+
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN currentLaunchAttemptId TEXT")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN lastHeartbeatAt INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN launchPhase TEXT NOT NULL DEFAULT 'UNKNOWN'")
+        db.execSQL("UPDATE virtual_runtime_sessions SET lastHeartbeatAt=lastActivityAt WHERE lastHeartbeatAt=0")
+        db.execSQL("CREATE TABLE IF NOT EXISTS virtual_launch_tokens_new (token TEXT NOT NULL, sessionId TEXT NOT NULL, launchAttemptId TEXT NOT NULL, virtualUserId INTEGER NOT NULL, packageName TEXT NOT NULL, activityName TEXT NOT NULL, createdAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL, consumedAt INTEGER, PRIMARY KEY(token))")
+        db.execSQL("INSERT OR IGNORE INTO virtual_launch_tokens_new (token, sessionId, launchAttemptId, virtualUserId, packageName, activityName, createdAt, expiresAt, consumedAt) SELECT token, token, token, virtualUserId, packageName, activityName, createdAt, createdAt + 300000, consumedAt FROM virtual_launch_tokens")
+        db.execSQL("DROP TABLE virtual_launch_tokens")
+        db.execSQL("ALTER TABLE virtual_launch_tokens_new RENAME TO virtual_launch_tokens")
+        db.execSQL("UPDATE virtual_runtime_sessions SET state='ERROR', launchPhase='MIGRATED_STALE', errorCode='ERROR_STALE_STARTING', sanitizedError='Inicio anterior limpiado al actualizar VirtualSpace.' WHERE state='STARTING'")
     }
 }
