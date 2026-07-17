@@ -11,6 +11,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
 import android.os.StatFs
 import android.provider.Settings
 import android.system.Os
@@ -49,6 +50,9 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -122,6 +126,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     private var pendingLaunchPackage by mutableStateOf<VirtualPackageEntity?>(null)
     private var exportPackage by mutableStateOf<VirtualPackageEntity?>(null)
     private var sortMode by mutableStateOf("nombre")
+    private var pendingExternalInstall by mutableStateOf<VirtualPackageEntity?>(null)
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) importStatus = "Selección cancelada" else importUri(uri)
@@ -153,6 +158,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         settingsStore = VirtualSpaceSettingsStore(applicationContext)
         resourceTracker = RuntimeResourceTracker(applicationContext)
         sessionManager = VirtualSessionManager(resourceTracker)
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().cleanupStarting(System.currentTimeMillis()) }
         setContent { AppUi() }
     }
 
@@ -167,6 +173,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
         LaunchedEffect(Unit) {
             repository.packages().collectLatest { packages = it }
+        }
+        LaunchedEffect(Unit) {
+            repository.sessions().collectLatest { rows ->
+                rows.forEach { row ->
+                    val label = packages.firstOrNull { it.packageName == row.packageName }?.label ?: row.packageName
+                    resourceTracker.upsert(ManagedSession(sessionId = row.sessionId, packageName = row.packageName, label = label, state = runCatching { SessionState.valueOf(row.state) }.getOrDefault(SessionState.ERROR), startedAt = row.startedAt ?: row.createdAt, lastActivityAt = row.lastActivityAt, estimatedBytes = snapshot.hostPssBytes))
+                }
+            }
         }
         LaunchedEffect(destination) {
             while (destination == Destination.PROCESSES) {
@@ -183,6 +197,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
 
         MaterialTheme {
+            pendingExternalInstall?.let { pkg -> ExternalInstallDialog(pkg) }
             Scaffold(
                 modifier = Modifier.safeDrawingPadding().imePadding(),
                 topBar = {
@@ -241,6 +256,21 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     @Composable
+    private fun ExternalInstallDialog(pkg: VirtualPackageEntity) {
+        AlertDialog(
+            onDismissRequest = { pendingExternalInstall = null },
+            title = { Text("Instalar fuera de VirtualSpace") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Esta aplicación se instalará en el perfil principal de Android. No utilizará sus archivos ni configuraciones de VirtualSpace. Sus datos normales y virtuales permanecerán separados.")
+                Text(externalInstallStatus(pkg))
+                Text("La copia virtual se mantendrá intacta.")
+            } },
+            confirmButton = { Button(onClick = { pendingExternalInstall = null; continueExternalInstall(pkg) }) { Text("Continuar") } },
+            dismissButton = { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { TextButton(onClick = { pendingExternalInstall = null }) { Text("Cancelar") }; TextButton(onClick = { pendingExternalInstall = null }) { Text("No volver a mostrar") } } },
+        )
+    }
+
+    @Composable
     private fun HomeScreen(packages: List<VirtualPackageEntity>, snapshot: RuntimeResourceSnapshot, settings: VirtualSpaceSettings) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item { if (!settings.firstRunComplete) FirstRunCard() }
@@ -291,7 +321,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Column(Modifier.weight(1f)) {
                         Text(pkg.label, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(pkg.packageName, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text("v${pkg.versionName} · ${compatLabel(pkg.compatibilityLevel)}")
+                        Text("v${pkg.versionName} · ${compatLabel(pkg.compatibilityLevel)} · ${runtimeModeLabel(pkg)}")
                     }
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -300,12 +330,18 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { openVirtual(pkg) },
-                        enabled = pkg.enabled && !pkg.damaged && pkg.compatibilityLevel == "COOPERATIVE_SUPPORTED" && pkg.entryPointClass != null,
-                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                    ) { Text("Abrir") }
-                    OutlinedButton(onClick = { stopPackage(pkg) }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Detener") }
+                    if (pkg.compatibilityLevel == "COOPERATIVE_SUPPORTED" && pkg.entryPointClass != null) {
+                        Button(
+                            onClick = { openVirtual(pkg) },
+                            enabled = state != SessionState.STARTING && pkg.enabled && !pkg.damaged,
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        ) { Text(if (state == SessionState.ACTIVE) "Volver" else "Abrir") }
+                    } else {
+                        Text("APK disponible para inspección; runtime no compatible.")
+                        Button(onClick = { selectedPackage = pkg; explorerPath = "/data/app/${pkg.packageName}/base.apk"; destination = Destination.FILES }) { Text("Inspeccionar") }
+                    }
+                    if (state == SessionState.STARTING) OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar inicio") }
+                    OutlinedButton(onClick = { stopPackage(pkg) }, enabled = state != SessionState.STOPPED, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Detener") }
                     OutlinedButton(
                         onClick = {
                             selectedPackage = pkg
@@ -351,14 +387,33 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Text("El límite seleccionado es un objetivo de uso administrado por VirtualSpace. Android puede finalizar procesos cuando necesite memoria.")
                 }
             }
-            item { SettingsSection("Aplicaciones virtuales") { settingsText("Máximo de apps activas: ${settings.maxActiveApps}", "Qué hacer al abrir otra app: ${settings.openAnotherAppPolicy}", "Restaurar última sesión: No implementada para sesiones pesadas") } }
-            item { SettingsSection("Almacenamiento") { settingsText("Máximo total para VirtualSpace: ${if (settings.maxTotalStorageMb == 0) "Sin límite interno adicional" else settings.maxTotalStorageMb}", "Caché máxima total: ${settings.maxCacheStorageMb} MB", "Eliminar caché automáticamente: ${settings.autoDeleteCache}", "Advertir cuando quede poco espacio: ${settings.warnLowStorage}") } }
-            item { SettingsSection("Interfaz") { settingsText("Tema: ${settings.theme}", "Densidad: Compacto / Normal / Amplio = ${settings.cardDensity}", "Animaciones: ${settings.animations}", "Reducir movimiento: ${settings.reduceMotion}", "Confirmar acciones destructivas: ${settings.confirmDestructiveActions}") } }
+            item { SettingsSection("Aplicaciones virtuales") {
+                Text("Máximo de apps activas")
+                Slider(value = settings.maxActiveApps.toFloat(), onValueChange = {}, valueRange = 1f..3f, steps = 1)
+                Text("${settings.maxActiveApps} app activa")
+                Text("Qué hacer al abrir otra app")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Preguntar", "Pausar actual", "Detener actual", "Impedir apertura").forEach { FilterChip(selected = it == "Pausar actual", onClick = {}, label = { Text(it) }) } }
+            } }
+            item { SettingsSection("Almacenamiento") {
+                SettingSwitch("Eliminar caché automáticamente", settings.autoDeleteCache) { scope.launch { settingsStore.setBool("auto_delete_cache", it) } }
+                Text("Caché máxima total")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("64 MB", "128 MB", "256 MB", "512 MB", "Personalizado").forEach { FilterChip(selected = it == "256 MB", onClick = {}, label = { Text(it) }) } }
+                SettingSwitch("Advertir cuando quede poco espacio", settings.warnLowStorage) {}
+            } }
+            item { SettingsSection("Interfaz") {
+                Text("Tema")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema", "Claro", "Oscuro").forEach { FilterChip(selected = settings.theme == it, onClick = { scope.launch { settingsStore.setTheme(it) } }, label = { Text(it) }) } }
+                Text("Densidad")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Compacto", "Normal", "Amplio").forEach { FilterChip(selected = settings.cardDensity == it, onClick = { scope.launch { settingsStore.setCardDensity(it) } }, label = { Text(it) }) } }
+                SettingSwitch("Animaciones", settings.animations) { scope.launch { settingsStore.setBool("animations", it) } }
+                SettingSwitch("Reducir movimiento", settings.reduceMotion) { scope.launch { settingsStore.setBool("reduce_motion", it) } }
+                SettingSwitch("Confirmar acciones destructivas", settings.confirmDestructiveActions) { scope.launch { settingsStore.setBool("confirm_destructive_actions", it) } }
+            } }
             item { SettingsSection("Permisos") { PermissionsScreen() } }
-            item { SettingsSection("Copias de seguridad") { settingsText("Incluir APK en exportación: ${settings.includeApkInExport}", "Incluir caché: ${settings.includeCacheInExport}", "Incluir logs: ${settings.includeLogsInExport}", "Verificación SHA-256: ${settings.backupSha256}", "Backup antes de borrar datos: ${settings.backupBeforeDelete}") } }
+            item { SettingsSection("Copias de seguridad") { SettingSwitch("Incluir APK en exportación", settings.includeApkInExport) { scope.launch { settingsStore.setBool("include_apk_export", it) } }; SettingSwitch("Incluir caché", settings.includeCacheInExport) { scope.launch { settingsStore.setBool("include_cache_export", it) } }; SettingSwitch("Incluir logs", settings.includeLogsInExport) { scope.launch { settingsStore.setBool("include_logs_export", it) } }; SettingSwitch("Verificación SHA-256", settings.backupSha256) { scope.launch { settingsStore.setBool("backup_sha256", it) } }; SettingSwitch("Backup antes de borrar", settings.backupBeforeDelete) { scope.launch { settingsStore.setBool("backup_before_delete", it) } } } }
             item { SettingsSection("Seguridad") { settingsText("Bloqueo mediante PIN: No implementada", "Desbloqueo biométrico: No implementada", "Impedir capturas en pantallas sensibles: ${settings.flagSecureEnabled}", "Registro de acciones administrativas: ${settings.adminActionLog}") } }
             item { SettingsSection("Diagnóstico") { deviceDiagnostics(packages).forEach { Text("${it.first}: ${it.second}") } } }
-            item { SettingsSection("Desarrollador") { settingsText("Modo desarrollador: ${settings.developerMode}", "Nivel de logs: ${settings.logLevel}", "Mostrar stack traces: ${settings.showStackTraces}", "Simular presión de memoria", "Simular poco almacenamiento") } }
+            item { SettingsSection("Desarrollador") { SettingSwitch("Modo desarrollador", settings.developerMode) { scope.launch { settingsStore.setDeveloperMode(it) } }; Text("Nivel de logs"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Error", "Información", "Depuración").forEach { FilterChip(selected = settings.logLevel == it, onClick = {}, label = { Text(it) }) } }; SettingSwitch("Mostrar stack traces", settings.showStackTraces) { scope.launch { settingsStore.setBool("show_stack_traces", it) } } } }
             item { SettingsSection("Acerca de") { settingsText("Nombre: Valcrono VirtualSpace", "Versión: ${BuildConfig.VERSION_NAME}", "Código de versión: ${BuildConfig.VERSION_CODE}", "Commit del build: ${BuildConfig.GIT_COMMIT}", "Fecha de compilación: ${BuildConfig.BUILD_DATE}", "Tipo de build: ${BuildConfig.BUILD_TYPE}", "SDK objetivo: 35", "Estado del runtime: PROTOTIPO FUNCIONAL PARA APPS COOPERATIVAS") } }
             item {
                 SettingsSection("Restablecimiento") {
@@ -369,6 +424,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     }
                 }
             }
+        }
+    }
+
+    @Composable
+    private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label)
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
     }
 
@@ -537,10 +600,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val children = runCatching { vfs.list(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrDefault(emptyList())
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
-                Text("Sistema virtual", style = MaterialTheme.typography.headlineSmall)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema virtual", "Aplicaciones", "Compartido", "APKs", "Procesos").forEach { Text(it) } }
-                Text("Ruta virtual: $path")
-                Text("Breadcrumbs: " + path.split('/').filter { it.isNotBlank() }.scan("") { acc, part -> "$acc/$part" }.joinToString(" › ") { it.ifBlank { "/" } })
+                Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("←") }; Column { Text("Archivos", style = MaterialTheme.typography.headlineSmall); Text(path, maxLines = 1, overflow = TextOverflow.Ellipsis) }; Spacer(Modifier.weight(1f)); TextButton(onClick = {}) { Text("Buscar") }; TextButton(onClick = {}) { Text("Vista") }; IconButton(onClick = {}) { Text("⋮") } }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema", "Apps", "Compartido", "APKs", "Procesos").forEach { FilterChip(selected = false, onClick = {}, label = { Text(it) }) } }
+                if (path == "/") FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { mapOf("Datos privados" to "/data/data", "Datos externos" to "/storage/emulated/0/Android/data", "Almacenamiento compartido" to "/storage/emulated/0", "APKs instalados" to "/data/app", "Bases de datos" to "/data/data", "Preferencias" to "/data/data", "Caché" to "/data/data", "Procesos" to "/proc").forEach { (label, target) -> Button(onClick = { explorerPath = target }) { Text(label) } } }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { listOf("Raíz") .plus(path.split('/').filter { it.isNotBlank() }).forEachIndexed { index, crumb -> FilterChip(selected = false, onClick = { explorerPath = if (index == 0) "/" else "/" + path.split('/').filter { it.isNotBlank() }.take(index).joinToString("/") }, label = { Text(crumb) }) } }
+                Text("${children.size} elementos")
                 node?.let { Text("Tipo: ${it.type} · Tamaño: ${formatBytes(it.size)} · Fecha: ${date(if (it.modifiedAt > 0) it.modifiedAt else System.currentTimeMillis())} · Permisos virtuales: ${it.permissions} · Propietario virtual: ${it.owner} · Paquete asociado: ${it.packageName ?: "—"}") }
                 if (settings.developerMode) node?.physicalFile?.let { Text("Ruta física: ${it.absolutePath}") }
                 if (path != "/") Button(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("Arriba") }
@@ -548,7 +612,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             items(children) { child ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(8.dp)) {
                     Text("${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "📁" else "📄"} ${child.name}")
-                    Text("${child.type} · ${formatBytes(child.size)} · ${child.permissions} · ${child.owner} · ${child.packageName ?: "—"}")
+                    Text("Tipo: ${child.type}")
+                    Text("${child.type} · ${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "" else formatBytes(child.size) + " · "}${date(if (child.modifiedAt > 0) child.modifiedAt else System.currentTimeMillis())} · ${child.permissions} · ${child.owner} · ${child.packageName ?: "—"}")
                     Button(onClick = { explorerPath = child.virtualPath }) { Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "Abrir" else "Ver") }
                 } }
             }
@@ -651,10 +716,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     private fun launchVirtual(pkg: VirtualPackageEntity) {
         val activity = pkg.entryPointClass ?: run { importStatus = "No ejecutable: entry point no declarado"; return }
         if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
-        resourceTracker.upsert(ManagedSession(packageName = pkg.packageName, label = pkg.label, state = SessionState.STARTING, estimatedBytes = 0))
         val token = java.util.UUID.randomUUID().toString()
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
-            withContext(Dispatchers.IO) { repository.db.launchTokens().upsert(VirtualLaunchTokenEntity(token, pkg.virtualUserId, pkg.packageName, activity, System.currentTimeMillis(), null)) }
+            withContext(Dispatchers.IO) {
+                repository.db.runtime().timeoutStarting(System.currentTimeMillis() - 15_000, System.currentTimeMillis())
+                repository.db.runtime().deleteFinalizedFor(pkg.packageName, pkg.virtualUserId)
+                repository.db.runtime().upsert(VirtualRuntimeSessionEntity(token, pkg.packageName, pkg.virtualUserId, "STARTING", System.currentTimeMillis(), null, System.currentTimeMillis(), null, Process.myPid(), activity, "PENDING", null, null))
+                repository.db.launchTokens().upsert(VirtualLaunchTokenEntity(token, pkg.virtualUserId, pkg.packageName, activity, System.currentTimeMillis(), null))
+            }
             startActivity(
                 Intent(this@MainActivity, ProxyActivity::class.java)
                     .putExtra("virtualUserId", pkg.virtualUserId)
@@ -666,6 +735,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun stopPackage(pkg: VirtualPackageEntity) {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)?.let { repository.db.runtime().updateState(it.sessionId, "STOPPED", System.currentTimeMillis(), null, null) } }
         resourceTracker.allSessions().filter { it.packageName == pkg.packageName }.forEach { resourceTracker.stop(it.sessionId) }
         importStatus = "Sesión detenida: ${pkg.label}"
     }
@@ -698,7 +768,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 repository.db.packages().deletePackage(pkg.packageName, pkg.virtualUserId)
                 repository.storage().resolver().packageRoot(pkg.virtualUserId, pkg.packageName).deleteRecursively()
             }
-            "Instalar normalmente en Android" -> installInAndroid(pkg)
+            "Instalar fuera de VirtualSpace" -> installInAndroid(pkg)
         }
     }
 
@@ -798,7 +868,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         sessionManager.onTrimMemory(level)
-        importStatus = "Presión de memoria: ${MemoryBudgetManager().trimPolicy(level)}"
+        importStatus = "Alerta de memoria reciente: ${trimPolicyLabel(MemoryBudgetManager().trimPolicy(level).name)}"
     }
 
     @Deprecated("Android framework deprecated onLowMemory; retained for ComponentCallbacks compatibility")
@@ -867,6 +937,10 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun installInAndroid(pkg: VirtualPackageEntity) {
+        pendingExternalInstall = pkg
+    }
+
+    private fun continueExternalInstall(pkg: VirtualPackageEntity) {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
@@ -875,7 +949,25 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
     }
 
+    private fun externalInstallStatus(pkg: VirtualPackageEntity): String {
+        val installed = runCatching { packageManager.getPackageInfo(pkg.packageName, 0) }.getOrNull()
+        return when {
+            installed == null -> "Estado: NOT_INSTALLED. Android permitirá una instalación normal."
+            installed.longVersionCode == pkg.versionCode -> "Estado: SAME_VERSION. Ya está instalada la misma versión en Android."
+            installed.longVersionCode > pkg.versionCode -> "Estado: NEWER_VERSION_INSTALLED. Sería una versión anterior."
+            else -> "Estado: UPDATE_AVAILABLE. Android lo tratará como actualización si la firma coincide."
+        }
+    }
+
     private fun compatLabel(level: String): String = when (level) { "COOPERATIVE_SUPPORTED" -> "Cooperativa compatible"; "HIGH_RISK" -> "Riesgo alto"; "UNSUPPORTED" -> "No ejecutable"; "IMPORTED_NOT_RUNNABLE" -> "Importada · No compatible con runtime cooperativo"; else -> level }
+
+    private fun runtimeModeLabel(pkg: VirtualPackageEntity): String = pkg.runtimeMode
+
+    private fun trimPolicyLabel(name: String): String = when (name) { "STOP_PAUSED" -> "Sesiones pausadas cerradas por presión de memoria"; else -> name.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() } }
+
+    private fun boolLabel(value: Boolean): String = if (value) "Activado" else "Desactivado"
+
+    private fun openPolicyLabel(policy: com.valcrono.core.OpenAnotherAppPolicy): String = when (policy.name) { "ASK" -> "Preguntar"; "PAUSE_CURRENT" -> "Pausar la aplicación actual"; "STOP_CURRENT" -> "Detener la aplicación actual"; "BLOCK_NEW" -> "Impedir apertura"; else -> policy.name }
 
     private fun sessionStateLabel(state: SessionState): String = when (state) { SessionState.STOPPED -> "Detenida"; SessionState.STARTING -> "Iniciando"; SessionState.ACTIVE -> "Activa"; SessionState.PAUSED -> "Pausada"; SessionState.STOPPING -> "Deteniendo"; SessionState.ERROR -> "Error al iniciar"; SessionState.SAVING -> "Guardando" }
 
@@ -916,6 +1008,6 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         "Actualizar APK",
         "Desinstalar",
         "Diagnóstico",
-        "Instalar normalmente en Android",
+        "Instalar fuera de VirtualSpace",
     )
 }

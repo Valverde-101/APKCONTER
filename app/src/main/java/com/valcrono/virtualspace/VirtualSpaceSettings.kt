@@ -76,12 +76,25 @@ class VirtualSpaceSettingsStore(private val context: Context) {
             developerMode = prefs[Keys.developerMode] ?: false,
             firstRunComplete = prefs[Keys.firstRunComplete] ?: false,
             flagSecureEnabled = prefs[Keys.flagSecureEnabled] ?: false,
+            autoDeleteCache = prefs[Keys.autoDeleteCache] ?: true,
+            animations = prefs[Keys.animations] ?: true,
+            reduceMotion = prefs[Keys.reduceMotion] ?: false,
+            confirmDestructiveActions = prefs[Keys.confirmDestructiveActions] ?: true,
+            includeApkInExport = prefs[Keys.includeApkInExport] ?: false,
+            includeCacheInExport = prefs[Keys.includeCacheInExport] ?: false,
+            includeLogsInExport = prefs[Keys.includeLogsInExport] ?: false,
+            backupSha256 = prefs[Keys.backupSha256] ?: true,
+            backupBeforeDelete = prefs[Keys.backupBeforeDelete] ?: true,
+            showStackTraces = prefs[Keys.showStackTraces] ?: false,
         )
     }
 
     suspend fun setProfile(profile: MemoryProfile) { context.virtualSpaceDataStore.edit { it[Keys.performanceProfile] = profile.name } }
     suspend fun setTheme(theme: String) { context.virtualSpaceDataStore.edit { it[Keys.theme] = theme } }
     suspend fun setCardDensity(density: String) { context.virtualSpaceDataStore.edit { it[Keys.cardDensity] = density } }
+    suspend fun setDeveloperMode(value: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.developerMode] = value } }
+    suspend fun setFlagSecure(value: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.flagSecureEnabled] = value } }
+    suspend fun setBool(key: String, value: Boolean) { context.virtualSpaceDataStore.edit { it[booleanPreferencesKey(key)] = value } }
     suspend fun setFirstRunComplete(done: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.firstRunComplete] = done } }
     suspend fun reset() { context.virtualSpaceDataStore.edit { it.clear() } }
 
@@ -95,5 +108,15 @@ class VirtualSpaceSettingsStore(private val context: Context) {
         val developerMode = booleanPreferencesKey("developer_mode")
         val firstRunComplete = booleanPreferencesKey("first_run_complete")
         val flagSecureEnabled = booleanPreferencesKey("flag_secure_enabled")
+        val autoDeleteCache = booleanPreferencesKey("auto_delete_cache")
+        val animations = booleanPreferencesKey("animations")
+        val reduceMotion = booleanPreferencesKey("reduce_motion")
+        val confirmDestructiveActions = booleanPreferencesKey("confirm_destructive_actions")
+        val includeApkInExport = booleanPreferencesKey("include_apk_export")
+        val includeCacheInExport = booleanPreferencesKey("include_cache_export")
+        val includeLogsInExport = booleanPreferencesKey("include_logs_export")
+        val backupSha256 = booleanPreferencesKey("backup_sha256")
+        val backupBeforeDelete = booleanPreferencesKey("backup_before_delete")
+        val showStackTraces = booleanPreferencesKey("show_stack_traces")
     }
 }
