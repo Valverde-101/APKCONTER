@@ -8,6 +8,7 @@ import com.valcrono.vpm.ComponentType
 import com.valcrono.vpm.VirtualComponent
 import com.valcrono.vpm.VirtualPermission
 import java.io.File
+import java.util.zip.ZipFile
 
 class AndroidArchivePackageParser(private val context: Context) {
     data class AndroidParsedPackage(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val components:List<VirtualComponent>,val permissions:List<VirtualPermission>,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?)
@@ -25,8 +26,22 @@ class AndroidArchivePackageParser(private val context: Context) {
         info.receivers?.forEach { components += VirtualComponent(pkg, it.name, ComponentType.RECEIVER, it.exported, it.processName) }
         val permissions = info.requestedPermissions?.map { VirtualPermission(pkg, it) }.orEmpty()
         val entry = appInfo.metaData?.getString("com.valcrono.virtualspace.ENTRY_POINT")
-        val nativeLibraryDir = appInfo.nativeLibraryDir
-        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull()
-        return AndroidParsedPackage(pkg,label, if(Build.VERSION.SDK_INT>=28) info.longVersionCode else info.versionCode.toLong(), info.versionName ?: "", appInfo.minSdkVersion, appInfo.targetSdkVersion, components, permissions, abi, nativeLibraryDir != null, components.firstOrNull{it.type==ComponentType.ACTIVITY}?.name, entry)
+        val apkAbis = nativeLibraryAbis(apk)
+        val hostAbis = android.os.Build.SUPPORTED_ABIS.toList()
+        val abi = hostAbis.firstOrNull { it in apkAbis } ?: apkAbis.firstOrNull()
+        return AndroidParsedPackage(pkg,label, if(Build.VERSION.SDK_INT>=28) info.longVersionCode else info.versionCode.toLong(), info.versionName ?: "", appInfo.minSdkVersion, appInfo.targetSdkVersion, components, permissions, abi, apkAbis.isNotEmpty(), components.firstOrNull{it.type==ComponentType.ACTIVITY}?.name, entry)
+    }
+
+    private fun nativeLibraryAbis(apk: File): List<String> {
+        val abis = linkedSetOf<String>()
+        ZipFile(apk).use { zip ->
+            zip.entries().asSequence().forEach { entry ->
+                val parts = entry.name.split('/')
+                if (parts.size >= 3 && parts[0] == "lib" && parts.last().endsWith(".so")) {
+                    abis += parts[1]
+                }
+            }
+        }
+        return abis.toList()
     }
 }

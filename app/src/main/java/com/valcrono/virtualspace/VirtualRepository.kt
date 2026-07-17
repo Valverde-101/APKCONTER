@@ -23,7 +23,7 @@ class VirtualRepository(private val context: Context) {
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "VALIDATING", null))
             val registry = linkedMapOf<String, VirtualPackage>()
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "COPYING", null))
-            val imported = SecureApkImporter(storage, registry).importApk(apk, userId)
+            val imported = SecureApkImporter(storage, registry).importApk(apk, userId, metadataOverride = metadata.toImporterMetadata(apk))
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "ANALYZING", null))
             val entity = VirtualPackageEntity(metadata.packageName, metadata.label, metadata.versionCode, metadata.versionName, metadata.minSdk, metadata.targetSdk, imported.sha256, imported.apkInternalPath, imported.installTime, imported.updateTime, metadata.primaryAbi, metadata.hasNativeLibraries, metadata.mainActivity, metadata.entryPointClass, imported.compatibilityLevel.name, true, false, userId, imported.virtualUid)
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "REGISTERING", null))
@@ -38,6 +38,23 @@ class VirtualRepository(private val context: Context) {
             VLog.e("Repository", "import failed ${metadata.packageName}", t); throw t
         }
     }
+    private fun AndroidArchivePackageParser.AndroidParsedPackage.toImporterMetadata(apk: File): ApkMetadata {
+        val scanned = ApkMetadataParser().parse(apk)
+        return scanned.copy(
+            packageName = packageName,
+            label = label,
+            versionCode = versionCode,
+            versionName = versionName,
+            minSdk = minSdk,
+            targetSdk = targetSdk,
+            components = components,
+            permissions = permissions,
+            hasNativeLibraries = hasNativeLibraries,
+            primaryAbi = primaryAbi,
+            mainActivity = mainActivity ?: entryPointClass,
+        )
+    }
+
     suspend fun verifyPackage(pkg: VirtualPackageEntity): Boolean { val ok = File(pkg.apkInternalPath).isFile && File(pkg.apkInternalPath).inputStream().use { Sha256.hex(it) } == pkg.sha256; if(!ok) db.packages().markDamaged(pkg.packageName,pkg.virtualUserId); return ok }
     fun storage() = storage
 }

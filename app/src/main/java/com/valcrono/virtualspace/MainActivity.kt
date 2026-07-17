@@ -30,14 +30,27 @@ import java.io.File
 
 class MainActivity : ComponentActivity() {
     private lateinit var repository: VirtualRepository
-    private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? -> uri?.let { importUri(it) } }
+    private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) {
+            importStatus = "Selección cancelada"
+        } else {
+            importUri(uri)
+        }
+    }
     private var pendingLaunchPackage by mutableStateOf<VirtualPackageEntity?>(null)
+    private var importStatus by mutableStateOf("Listo para importar APKs")
+    private var isImporting by mutableStateOf(false)
     private val permissionRequester = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val denied = grants.filterValues { granted -> !granted }.keys
         if (denied.isEmpty()) {
-            pendingLaunchPackage?.let { launchVirtual(it) }
+            pendingLaunchPackage?.let { launchVirtual(it) } ?: run {
+                importStatus = "Permisos concedidos"
+                VLog.i("UI", importStatus)
+            }
         } else {
-            VLog.e("UI", "Permisos denegados para abrir la app virtual: ${denied.joinToString()}")
+            val message = "Permisos denegados: ${denied.joinToString()}"
+            importStatus = message
+            VLog.e("UI", message)
         }
         pendingLaunchPackage = null
     }
@@ -56,9 +69,18 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.padding(16.dp)) {
                 Text("Valcrono VirtualSpace", style = MaterialTheme.typography.headlineSmall)
                 Row {
-                    Button({ picker.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream")) }) { Text("Importar APK") }
+                    Button({
+                        importStatus = "Selecciona un archivo .apk"
+                        picker.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "application/zip", "*/*"))
+                    }) { Text("Importar APK") }
                     Spacer(Modifier.width(8.dp))
-                    Button({ scope.launch { VLog.i("UI", Android15Diagnostics.summary()) } }) { Text("Diagnóstico") }
+                    Button({ requestHostPermissions() }) { Text("Pedir permisos") }
+                    Spacer(Modifier.width(8.dp))
+                    Button({ runDiagnostics() }) { Text("Diagnóstico") }
+                }
+                Text(importStatus)
+                if (isImporting) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
                 }
                 Text(Android15Diagnostics.summary())
                 LazyColumn {
@@ -68,8 +90,9 @@ class MainActivity : ComponentActivity() {
                                 Text("${p.label} (${p.packageName})")
                                 Text("v${p.versionName} ${p.compatibilityLevel} damaged=${p.damaged}")
                                 Row {
-                                    Button({ openVirtual(p) }, enabled = p.enabled && !p.damaged) { Text("Abrir") }
-                                    Button({ installInAndroid(p) }, enabled = p.enabled && !p.damaged) { Text("Instalar en Android") }
+                                    Button({ openVirtual(p) }, enabled = p.enabled && !p.damaged && p.compatibilityLevel != "UNSUPPORTED") { Text("Abrir") }
+                                    Button({ requestPermissionsForPackage(p) }, enabled = p.enabled && !p.damaged) { Text("Permisos") }
+                                    Button({ installInAndroid(p) }, enabled = !p.damaged) { Text("Instalar en Android") }
                                     Button({ scope.launch { repository.storage().clearCache(p.virtualUserId, p.packageName) } }) { Text("Limpiar cache") }
                                     Button({ exportSimple(p) }) { Text("Exportar") }
                                     Button({ scope.launch { repository.db.packages().deletePackage(p.packageName, p.virtualUserId); repository.storage().resolver().packageRoot(p.virtualUserId, p.packageName).deleteRecursively() } }) { Text("Desinstalar") }
@@ -87,19 +110,77 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun importUri(uri: Uri) {
+        importStatus = "Copiando APK seleccionado..."
+        isImporting = true
         val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Main)
         scope.launch {
             try {
-                val firstCopy = withContext(Dispatchers.IO) {
-                    File(cacheDir, "incoming-${System.currentTimeMillis()}.apk").also { out -> contentResolver.openInputStream(uri)!!.use { input -> out.outputStream().use { input.copyTo(it) } } }
+                runCatching {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
+                val firstCopy = withContext(Dispatchers.IO) {
+                    val out = File(cacheDir, "incoming-${System.currentTimeMillis()}.apk")
+                    val input = contentResolver.openInputStream(uri) ?: error("No se pudo abrir el APK seleccionado")
+                    input.use { source -> out.outputStream().use { target -> source.copyTo(target) } }
+                    if (out.length() == 0L) error("El APK seleccionado está vacío")
+                    out
+                }
+                importStatus = "Analizando APK..."
                 val parsed = AndroidArchivePackageParser(this@MainActivity).parse(firstCopy)
-                val namedCopy = File(cacheDir, "${parsed.packageName}.apk")
-                firstCopy.copyTo(namedCopy, overwrite = true); firstCopy.delete()
-                withContext(Dispatchers.IO) { repository.importCopiedApk(namedCopy, 0, parsed); namedCopy.delete() }
-                VLog.i("UI", "Imported ${parsed.packageName} via AndroidArchivePackageParser")
-            } catch (t: Throwable) { VLog.e("UI", "Import failed: ${t.message}", t) }
+                val namedCopy = File(cacheDir, "${parsed.packageName}-${System.currentTimeMillis()}.apk")
+                firstCopy.copyTo(namedCopy, overwrite = true)
+                firstCopy.delete()
+                val imported = withContext(Dispatchers.IO) { repository.importCopiedApk(namedCopy, 0, parsed) }
+                namedCopy.delete()
+                val warning = if (imported.compatibilityLevel == "UNSUPPORTED") " con advertencias: no se puede abrir virtualmente en este dispositivo; usa Instalar en Android" else ""
+                val message = "Importado ${parsed.label} (${parsed.packageName})$warning"
+                importStatus = message
+                VLog.i("UI", message)
+            } catch (t: Throwable) {
+                val message = "No se pudo importar el APK: ${t.message ?: t::class.java.simpleName}"
+                importStatus = message
+                VLog.e("UI", message, t)
+            } finally {
+                isImporting = false
+            }
         }
+    }
+
+    private fun requestHostPermissions() {
+        val missing = allRuntimePermissions().filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) {
+            importStatus = "Todos los permisos compatibles ya están concedidos"
+            VLog.i("UI", importStatus)
+        } else {
+            importStatus = "Solicitando ${missing.size} permisos..."
+            permissionRequester.launch(missing.toTypedArray())
+        }
+    }
+
+    private fun requestPermissionsForPackage(p: VirtualPackageEntity) {
+        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Main)
+        scope.launch {
+            val missing = withContext(Dispatchers.IO) { missingRuntimePermissions(p) }
+            if (missing.isEmpty()) {
+                importStatus = "${p.label} no tiene permisos pendientes"
+                VLog.i("UI", importStatus)
+            } else {
+                pendingLaunchPackage = null
+                importStatus = "Solicitando permisos para ${p.label}"
+                permissionRequester.launch(missing.toTypedArray())
+            }
+        }
+    }
+
+    private fun runDiagnostics() {
+        val missing = allRuntimePermissions().filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        val summary = Android15Diagnostics.summary()
+        importStatus = if (missing.isEmpty()) {
+            "$summary | permisos OK"
+        } else {
+            "$summary | faltan ${missing.size} permisos; pulsa Pedir permisos"
+        }
+        VLog.i("UI", importStatus)
     }
 
     private fun openVirtual(p: VirtualPackageEntity) {
@@ -137,6 +218,8 @@ class MainActivity : ComponentActivity() {
         else -> null
     }
 
+    private fun allRuntimePermissions(): List<String> = supportedRuntimePermissions.mapNotNull { normalizeRuntimePermission(it) }.distinct()
+
     private val supportedRuntimePermissions = setOf(
         android.Manifest.permission.CAMERA,
         android.Manifest.permission.RECORD_AUDIO,
@@ -166,14 +249,22 @@ class MainActivity : ComponentActivity() {
     private fun installInAndroid(p: VirtualPackageEntity) {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-            VLog.i("UI", "Solicitando permiso para instalar APKs de fuentes desconocidas")
+            importStatus = "Activa permiso para instalar APKs y vuelve a tocar Instalar en Android"
+            VLog.i("UI", importStatus)
             return
         }
         val apk = File(p.apkInternalPath)
+        if (!apk.isFile) {
+            importStatus = "No se encontró el APK importado para instalar en Android"
+            VLog.e("UI", importStatus)
+            return
+        }
+        importStatus = "Abriendo instalador de Android para ${p.label}..."
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
         startActivity(Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
     }
 
