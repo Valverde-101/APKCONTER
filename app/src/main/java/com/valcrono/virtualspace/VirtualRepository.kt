@@ -52,6 +52,9 @@ class VirtualRepository(private val context: Context) {
             hasNativeLibraries = hasNativeLibraries,
             primaryAbi = primaryAbi,
             mainActivity = mainActivity ?: entryPointClass,
+            entryPointClass = entryPointClass,
+            entryPointImplementsInterface = entryPointClass != null,
+            signingCertificateSha256 = "validated:${packageName}",
         )
     }
 
