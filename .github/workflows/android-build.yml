@@ -1,0 +1,104 @@
+name: Build Android APKs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compilar APKs debug
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar Android Platform 35 y Build Tools
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Mostrar versiones
+        run: |
+          java -version
+          gradle --version
+
+      - name: Limpiar proyecto
+        run: gradle clean --stacktrace
+
+      - name: Ejecutar pruebas
+        run: gradle test --stacktrace
+
+      - name: Ejecutar Lint
+        run: gradle lint --stacktrace
+
+      - name: Compilar APKs
+        run: |
+          gradle :testapp-a:assembleDebug \
+                 :testapp-b:assembleDebug \
+                 :app:assembleDebug \
+                 --stacktrace
+
+      - name: Verificar APKs
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          test -f testapp-a/build/outputs/apk/debug/testapp-a-debug.apk
+          test -f testapp-b/build/outputs/apk/debug/testapp-b-debug.apk
+
+          mkdir -p build-artifacts
+
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             build-artifacts/app-debug.apk
+
+          cp testapp-a/build/outputs/apk/debug/testapp-a-debug.apk \
+             build-artifacts/testapp-a-debug.apk
+
+          cp testapp-b/build/outputs/apk/debug/testapp-b-debug.apk \
+             build-artifacts/testapp-b-debug.apk
+
+          ls -lh build-artifacts/*.apk
+          sha256sum build-artifacts/*.apk
+
+      - name: Publicar APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: valcrono-virtualspace-debug-apks
+          path: build-artifacts/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publicar reportes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valcrono-build-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/reports/lint-results*
+            **/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
