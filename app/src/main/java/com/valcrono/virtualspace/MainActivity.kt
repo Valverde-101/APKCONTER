@@ -1,16 +1,11 @@
 package com.valcrono.virtualspace
 
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,11 +26,6 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     private lateinit var repository: VirtualRepository
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? -> uri?.let { importUri(it) } }
-    private var pendingLaunchPackage by mutableStateOf<VirtualPackageEntity?>(null)
-    private val permissionRequester = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        pendingLaunchPackage?.let { launchVirtual(it) }
-        pendingLaunchPackage = null
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,7 +54,6 @@ class MainActivity : ComponentActivity() {
                                 Text("v${p.versionName} ${p.compatibilityLevel} damaged=${p.damaged}")
                                 Row {
                                     Button({ openVirtual(p) }, enabled = p.enabled && !p.damaged) { Text("Abrir") }
-                                    Button({ installInAndroid(p) }, enabled = p.enabled && !p.damaged) { Text("Instalar en Android") }
                                     Button({ scope.launch { repository.storage().clearCache(p.virtualUserId, p.packageName) } }) { Text("Limpiar cache") }
                                     Button({ exportSimple(p) }) { Text("Exportar") }
                                     Button({ scope.launch { repository.db.packages().deletePackage(p.packageName, p.virtualUserId); repository.storage().resolver().packageRoot(p.virtualUserId, p.packageName).deleteRecursively() } }) { Text("Desinstalar") }
@@ -98,60 +87,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openVirtual(p: VirtualPackageEntity) {
-        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Main)
-        scope.launch {
-            val missing = withContext(Dispatchers.IO) { missingRuntimePermissions(p) }
-            if (missing.isNotEmpty()) {
-                pendingLaunchPackage = p
-                permissionRequester.launch(missing.toTypedArray())
-            } else {
-                launchVirtual(p)
-            }
-        }
-    }
-
-    private fun launchVirtual(p: VirtualPackageEntity) {
         val activity = p.mainActivity ?: p.entryPointClass ?: return
         val token = InMemoryLaunchTokens.create(p.virtualUserId, p.packageName, activity)
         startActivity(Intent(this, ProxyActivity::class.java).putExtra("virtualUserId", p.virtualUserId).putExtra("virtualPackageName", p.packageName).putExtra("virtualActivityName", activity).putExtra("launchToken", token))
     }
 
-    private suspend fun missingRuntimePermissions(p: VirtualPackageEntity): List<String> {
-        val requested = repository.db.permissions().permissionNames(p.packageName, p.virtualUserId)
-        return requested
-            .mapNotNull { normalizeRuntimePermission(it) }
-            .distinct()
-            .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-    }
-
-    private fun normalizeRuntimePermission(permission: String): String? = when {
-        permission == android.Manifest.permission.POST_NOTIFICATIONS && Build.VERSION.SDK_INT < 33 -> null
-        permission == android.Manifest.permission.READ_EXTERNAL_STORAGE && Build.VERSION.SDK_INT >= 33 -> null
-        permission == android.Manifest.permission.WRITE_EXTERNAL_STORAGE && Build.VERSION.SDK_INT > 28 -> null
-        permission.startsWith("android.permission.") -> permission
-        else -> null
-    }
-
-    private fun installInAndroid(p: VirtualPackageEntity) {
-        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
-            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-            VLog.i("UI", "Solicitando permiso para instalar APKs de fuentes desconocidas")
-            return
-        }
-        val apk = File(p.apkInternalPath)
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
-        startActivity(Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        })
-    }
-
     private fun exportSimple(p: VirtualPackageEntity) {
         val root = repository.storage().resolver().packageRoot(p.virtualUserId, p.packageName)
         val out = File(filesDir, "exports/${p.packageName}-${System.currentTimeMillis()}").apply { mkdirs() }
-        File(out, "metadata.json").writeText("{"format":"ValcronoVirtualExport-1","package":"${p.packageName}"}")
+        File(out, "metadata.json").writeText("{\"format\":\"ValcronoVirtualExport-1\",\"package\":\"${p.packageName}\"}")
         File(out, "package-info.json").writeText(p.toString())
-        File(out, "checksums.json").writeText(VirtualFileManager(repository.storage().resolver()).checksums(root).entries.joinToString(prefix = "{", postfix = "}") { ""${it.key}":"${it.value}"" })
+        File(out, "checksums.json").writeText(VirtualFileManager(repository.storage().resolver()).checksums(root).entries.joinToString(prefix = "{", postfix = "}") { "\"${it.key}\":\"${it.value}\"" })
         VLog.i("Export", "Exported to ${out.absolutePath}")
     }
 }
