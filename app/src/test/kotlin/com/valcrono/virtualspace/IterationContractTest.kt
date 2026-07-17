@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionSingleInstanceTest { @Test fun uniqueActiveStatesAreDefined() { assertTrue(listOf("STOPPED","STARTING","ACTIVE","PAUSED","STOPPING","ERROR").contains("ACTIVE")) } }
-class StartingTimeoutTest { @Test fun timeoutIsFifteenSeconds() { assertEquals(15_000L, 15_000L) } }
+class StartingTimeoutTest { @Test fun timeoutIsThirtySeconds() { assertEquals(30_000L, 30_000L) } }
 class SessionStateConsistencyTest { @Test fun activeLabelIsUserFacing() { assertEquals("Activa", label("ACTIVE")) } }
 class StaleSessionCleanupTest { @Test fun staleStartingHasErrorCode() { assertEquals("ERROR_STALE_STARTING", "ERROR_STALE_STARTING") } }
 class FileExplorerBackNavigationTest { @Test fun parentOfPackagePath() { assertEquals("/data/data", parent("/data/data/com.test")) } }
@@ -38,7 +38,7 @@ private fun boolText(value: Boolean) = if (value) "Activado" else "Desactivado"
 class SessionRoomSingleSourceTest { @Test fun roomStatesAreCanonical() { assertEquals(listOf("STOPPED","STARTING","ACTIVE","PAUSED","STOPPING","ERROR"), canonicalStates) } }
 class SessionReconciliationTest { @Test fun staleStartingMapsToRecoverableError() { assertEquals("ERROR_STALE_STARTING", staleStartingCode) } }
 class DuplicateSessionRemovalTest { @Test fun sessionKeyIsPackageAndUser() { assertEquals("0:com.test", sessionKey("com.test", 0)) } }
-class StartingWatchdogTest { @Test fun watchdogTimeoutIsFifteenSeconds() { assertEquals(15_000L, watchdogTimeoutMs) } }
+class StartingWatchdogTest { @Test fun watchdogTimeoutIsThirtySeconds() { assertEquals(30_000L, watchdogTimeoutMs) } }
 class ProxyActiveAcknowledgementTest { @Test fun proxyUsesSpecificLaunchErrors() { assertTrue("LAUNCH_TOKEN_INVALID" in launchErrors) } }
 class ConfigurationChangeSessionTest { @Test fun changingConfigurationsPreservesSession() { assertTrue(preserveOnConfigurationChange) } }
 class StoppedButtonStateTest { @Test fun stoppedActionsDoNotIncludeStop() { assertEquals(listOf("Abrir", "Archivos"), actionsFor("STOPPED")) } }
@@ -59,7 +59,7 @@ class SettingsImmediateEffectTest { @Test fun openPolicyPersistsImmediately() { 
 private val canonicalStates = listOf("STOPPED","STARTING","ACTIVE","PAUSED","STOPPING","ERROR")
 private const val staleStartingCode = "ERROR_STALE_STARTING"
 private fun sessionKey(packageName: String, userId: Int) = "$userId:$packageName"
-private const val watchdogTimeoutMs = 15_000L
+private const val watchdogTimeoutMs = 30_000L
 private val launchErrors = setOf("LAUNCH_TOKEN_INVALID", "PACKAGE_NOT_REGISTERED", "PACKAGE_DISABLED_OR_DAMAGED", "APK_HASH_MISMATCH", "ENTRY_POINT_NOT_DECLARED", "ENTRY_POINT_CLASS_NOT_FOUND", "ENTRY_POINT_INTERFACE_MISMATCH", "RUNTIME_INITIALIZATION_FAILED", "ERROR_START_TIMEOUT")
 private const val preserveOnConfigurationChange = true
 private fun actionsFor(state: String) = if (state == "STOPPED") listOf("Abrir", "Archivos") else emptyList()
