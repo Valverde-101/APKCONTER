@@ -6,7 +6,7 @@ import kotlin.math.min
 enum class MemoryProfile { AUTOMATIC, LOW_POWER, BALANCED, HIGH_PERFORMANCE, CUSTOM }
 enum class OpenAnotherAppPolicy { ASK, PAUSE_CURRENT, STOP_CURRENT, BLOCK }
 enum class TrimPolicy { RELEASE_VISUALS, REDUCE_CACHES, STOP_PAUSED, STOP_NON_ESSENTIAL }
-enum class SessionState { STOPPED, STARTING, ACTIVE, PAUSED, ERROR, SAVING }
+enum class SessionState { STOPPED, STARTING, ACTIVE, PAUSED, STOPPING, ERROR, SAVING }
 enum class SettingAvailability { AVAILABLE, EXPERIMENTAL, NOT_IMPLEMENTED }
 
 data class MemoryInputs(
