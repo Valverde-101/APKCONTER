@@ -56,25 +56,7 @@ jobs:
       - name: Ejecutar Lint
         run: gradle lint --stacktrace
 
-      - name: Generar reporte de clasificación
-        run: |
-          mkdir -p build-artifacts
-          gradle :virtual-package-manager:test --tests "*.CooperativeApkClassificationTest" --stacktrace
-          cat > build-artifacts/classification-report.txt <<'REPORT'
-          testapp-a -> COOPERATIVE_SUPPORTED
-          testapp-b -> COOPERATIVE_SUPPORTED
-          Runtime cooperativo compatible; Entry point encontrado; Sin librerías nativas; Sin Google Play Services; Sin multiproceso.
-          REPORT
-
-      - name: Reporte instrumentado sin dispositivo
-        if: always()
-        run: |
-          mkdir -p build-artifacts
-          echo "Pruebas instrumentadas pendientes: no hay dispositivo Android conectado en GitHub-hosted runner." > build-artifacts/instrumented-tests-report.txt
-
       - name: Compilar APKs
-        env:
-          GITHUB_SHA: ${{ github.sha }}
         run: |
           gradle :testapp-a:assembleDebug \
                  :testapp-b:assembleDebug \
@@ -118,8 +100,5 @@ jobs:
             **/build/reports/tests/**
             **/build/reports/lint-results*
             **/build/test-results/**
-            **/build/reports/androidTests/**
-            build-artifacts/classification-report.txt
-            build-artifacts/instrumented-tests-report.txt
           if-no-files-found: ignore
           retention-days: 14
