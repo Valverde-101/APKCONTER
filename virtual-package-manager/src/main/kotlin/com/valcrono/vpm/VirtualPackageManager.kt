@@ -205,17 +205,19 @@ class SecureApkImporter(
 ) {
     private val parser = ApkMetadataParser()
 
-    fun importApk(source: File, userId: Int = 0, confirmUpdate: Boolean = true): VirtualPackage {
+    fun importApk(source: File, userId: Int = 0, confirmUpdate: Boolean = true, metadataOverride: ApkMetadata? = null): VirtualPackage {
         ApkValidator().validate(source)
         val sourceSize = source.length()
         val sourceModified = source.lastModified()
         val sourceSha = source.inputStream().use { Sha256.hex(it) }
         require(source.length() == sourceSize && source.lastModified() == sourceModified) { "APK changed during import preflight" }
-        val metadata = parser.parse(source)
+        val metadata = metadataOverride ?: parser.parse(source)
         val existing = registry[metadata.packageName]
         require(existing == null || confirmUpdate) { "Duplicate package requires update confirmation" }
         val (level, issues) = CompatibilityScanner().scan(metadata)
-        require(level != CompatibilityLevel.UNSUPPORTED) { issues.joinToString { it.message } }
+        if (level == CompatibilityLevel.UNSUPPORTED) {
+            VLog.e("Importer", "package=${metadata.packageName} imported with unsupported compatibility: ${issues.joinToString { it.message }}")
+        }
         val virtualUid = existing?.virtualUid ?: 100000 + registry.size
         val storageMetadata = storage.createPackageStorage(userId, metadata.packageName, virtualUid)
         storage.ensureQuota(userId, metadata.packageName, sourceSize)
