@@ -19,12 +19,12 @@ class VirtualEntryPoint : VirtualAppEntryPoint {
     override fun onAction(actionId: String): VirtualContent {
         when (actionId) {
             "increment" -> { counter++; env.preferences.putInt("state", "counter", counter); lastStatus = "Contador=$counter" }
-            "save_file" -> { env.files.writeText("files/a-file.txt", "counter=$counter"); lastStatus = "Archivo creado por TestApp A" }
-            "save_preferences" -> { env.preferences.putString("prefs", "last", "counter=$counter"); lastStatus = "Preferencias guardadas por TestApp A" }
+            "save_file" -> { env.files.writeText("files/a-file.txt", "counter=$counter"); lastStatus = "Archivo guardado correctamente · ${java.time.Instant.now()} · OK" }
+            "save_preferences" -> { env.preferences.putString("prefs", "last", "counter=$counter"); lastStatus = "Preferencias guardadas correctamente · ${java.time.Instant.now()} · OK" }
             "create_database" -> {
                 env.database.execute("a.db", "CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT)")
                 env.database.execute("a.db", "INSERT INTO events(msg) VALUES(?)", listOf("counter=$counter"))
-                lastStatus = "SQLite actualizado por TestApp A: ${env.database.query("a.db", "SELECT * FROM events").size} filas"
+                lastStatus = "SQLite creada correctamente · ${java.time.Instant.now()} · ${env.database.query("a.db", "SELECT * FROM events").size} filas"
             }
             "send_to_b" -> { val id = env.messages.send("com.valcrono.testapp.b", "text", "Hola desde A contador=$counter"); lastStatus = "Mensaje enviado a B id=$id" }
             else -> lastStatus = "Acción desconocida: $actionId"

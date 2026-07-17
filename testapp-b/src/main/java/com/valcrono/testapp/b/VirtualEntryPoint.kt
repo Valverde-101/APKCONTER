@@ -4,7 +4,7 @@ import com.valcrono.runtime.*
 
 class VirtualEntryPoint : VirtualAppEntryPoint {
     private lateinit var env: VirtualAppEnvironment
-    private val messages = mutableListOf<String>()
+    private val messages = linkedSetOf<String>()
 
     override fun onCreate(environment: VirtualAppEnvironment) {
         env = environment
@@ -15,7 +15,7 @@ class VirtualEntryPoint : VirtualAppEntryPoint {
     override fun createContent(): VirtualContent = screen("B cargada desde APK importado")
 
     override fun onVirtualMessage(message: VirtualMessage): VirtualContent {
-        messages += "${message.fromPackage}: ${message.payload}"
+        messages += "${message.id}:${message.fromPackage}: ${message.payload}"
         env.files.writeText("files/received.txt", messages.joinToString("\n"))
         env.preferences.putString("messages", "last", message.payload)
         env.database.execute("b.db", "CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, payload TEXT)")
@@ -23,11 +23,12 @@ class VirtualEntryPoint : VirtualAppEntryPoint {
         return screen("Mensaje recibido y guardado")
     }
 
-    override fun onAction(actionId: String): VirtualContent = screen("Acción $actionId")
+    override fun onAction(actionId: String): VirtualContent { if (actionId == "clear_history") { messages.clear(); env.files.writeText("files/received.txt", ""); return screen("Historial borrado") }; return screen("Acción $actionId") }
 
     private fun screen(status: String) = VirtualContent.Column(listOf(
         VirtualContent.Text("Test App B"),
         VirtualContent.Text(status),
-        VirtualContent.ListContent("Mensajes", messages),
+        VirtualContent.ListContent("Mensajes", messages.toList()),
+        VirtualContent.Button("Borrar historial", "clear_history"),
     ))
 }
