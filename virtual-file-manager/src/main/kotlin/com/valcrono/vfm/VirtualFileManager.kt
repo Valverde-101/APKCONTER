@@ -1,0 +1,7 @@
+package com.valcrono.vfm
+import com.valcrono.core.Sha256
+import com.valcrono.virtualstorage.VirtualPathResolver
+import java.io.File
+
+data class FileEntry(val name:String,val path:String,val directory:Boolean,val size:Long)
+class VirtualFileManager(private val resolver:VirtualPathResolver){ fun list(userId:Int,pkg:String,rel:String=""):List<FileEntry>{ val dir=resolver.resolve(userId,pkg,rel); require(dir.isDirectory){"Not a directory"}; return dir.listFiles()?.sortedWith(compareBy<File>{!it.isDirectory}.thenBy{it.name})?.map{FileEntry(it.name,it.path,it.isDirectory,it.length())}.orEmpty() } fun mkdir(userId:Int,pkg:String,rel:String)=resolver.resolve(userId,pkg,rel).mkdirs(); fun readText(userId:Int,pkg:String,rel:String,limit:Int=64_000):String{ val f=resolver.resolve(userId,pkg,rel); require(f.length()<=limit){"File too large for text preview"}; return f.readText() } fun copy(userId:Int,pkg:String,from:String,to:String){ resolver.resolve(userId,pkg,from).copyRecursively(resolver.resolve(userId,pkg,to), overwrite=true) } fun move(userId:Int,pkg:String,from:String,to:String){ val src=resolver.resolve(userId,pkg,from); val dst=resolver.resolve(userId,pkg,to); require(src.renameTo(dst)){"Move failed"} } fun delete(userId:Int,pkg:String,rel:String){ resolver.resolve(userId,pkg,rel).deleteRecursively() } fun checksums(root:File):Map<String,String>{ val base=root.canonicalFile; return base.walkTopDown().filter{it.isFile}.associate{ it.relativeTo(base).path to it.inputStream().use(Sha256::hex) } } }

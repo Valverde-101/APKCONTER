@@ -1,0 +1,3 @@
+plugins { alias(libs.plugins.android.application); alias(libs.plugins.kotlin.android); alias(libs.plugins.compose) }
+android { namespace = "com.valcrono.testapp.a"; compileSdk = 35; defaultConfig { applicationId = "com.valcrono.testapp.a"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "1.0" }; buildFeatures { compose = true } }
+dependencies { implementation(project(":virtual-runtime-api")); implementation(libs.androidx.core); implementation(libs.activity.compose); implementation(platform(libs.compose.bom)); implementation(libs.compose.ui); implementation(libs.compose.material3) }
