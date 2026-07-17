@@ -56,6 +56,7 @@ class VirtualStorageManager(
             "metadata",
         )
         dirs.forEach { resolver.resolve(userId, packageName, it).mkdirs() }
+        File(filesDir, "virtual/users/$userId/shared").mkdirs()
         val root = resolver.packageRoot(userId, packageName)
         val metadata = VirtualStorageMetadata(packageName, userId, virtualUid, root)
         VLog.i("VirtualStorage", "created package=$packageName user=$userId root=$root")

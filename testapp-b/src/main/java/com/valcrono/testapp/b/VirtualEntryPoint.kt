@@ -15,7 +15,7 @@ class VirtualEntryPoint : VirtualAppEntryPoint {
     override fun createContent(): VirtualContent = screen("B cargada desde APK importado")
 
     override fun onVirtualMessage(message: VirtualMessage): VirtualContent {
-        messages += "${message.id}:${message.fromPackage}: ${message.payload}"
+        messages += "${message.fromPackage}: ${message.payload}"
         env.files.writeText("files/received.txt", messages.joinToString("\n"))
         env.preferences.putString("messages", "last", message.payload)
         env.database.execute("b.db", "CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, payload TEXT)")
