@@ -4,7 +4,7 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "virtual_packages", primaryKeys = ["packageName", "virtualUserId"])
-data class VirtualPackageEntity(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val sha256:String,val apkInternalPath:String,val installTime:Long,val updateTime:Long,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?,val compatibilityLevel:String,val enabled:Boolean,val damaged:Boolean,val virtualUserId:Int,val virtualUid:Int)
+data class VirtualPackageEntity(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val sha256:String,val apkInternalPath:String,val installTime:Long,val updateTime:Long,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?,val compatibilityLevel:String,val enabled:Boolean,val damaged:Boolean,val virtualUserId:Int,val virtualUid:Int,val runtimeMode:String = "COOPERATIVE")
 @Entity(tableName = "virtual_components", primaryKeys = ["packageName", "virtualUserId", "name", "type"])
 data class VirtualComponentEntity(val packageName:String,val virtualUserId:Int,val name:String,val type:String,val exported:Boolean,val processName:String?)
 @Entity(tableName = "virtual_permissions", primaryKeys = ["packageName", "virtualUserId", "name"])
@@ -15,8 +15,22 @@ data class VirtualInstallSessionEntity(val id:String,val packageName:String?,val
 data class VirtualStorageRecordEntity(val packageName:String,val virtualUserId:Int,val rootPath:String,val usedBytes:Long)
 @Entity(tableName = "compatibility_issues", primaryKeys = ["packageName", "virtualUserId", "code"])
 data class CompatibilityIssueEntity(val packageName:String,val virtualUserId:Int,val severity:String,val code:String,val message:String)
-@Entity(tableName = "virtual_runtime_sessions", primaryKeys = ["id"])
-data class VirtualRuntimeSessionEntity(val id:String,val packageName:String,val virtualUserId:Int,val entryPointClass:String,val startedAt:Long,val state:String,val lastError:String?)
+@Entity(tableName = "virtual_runtime_sessions", primaryKeys = ["sessionId"], indices = [Index(value = ["packageName", "virtualUserId"], unique = true)])
+data class VirtualRuntimeSessionEntity(
+    val sessionId:String,
+    val packageName:String,
+    val virtualUserId:Int,
+    val state:String,
+    val createdAt:Long,
+    val startedAt:Long?,
+    val lastActivityAt:Long,
+    val stoppedAt:Long?,
+    val hostPid:Int?,
+    val entryPoint:String?,
+    val classLoaderState:String,
+    val errorCode:String?,
+    val sanitizedError:String?,
+)
 @Entity(tableName = "virtual_shared_permissions", primaryKeys = ["packageName", "virtualUserId", "permission"])
 data class VirtualSharedPermissionEntity(val packageName:String,val virtualUserId:Int,val permission:String,val grantedAt:Long,val grantedBy:String)
 @Entity(tableName = "virtual_fs_access_log", primaryKeys = ["id"])
@@ -44,7 +58,16 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE senderPackage=:pkg AND virtualUserId=:userId") suspend fun sentCount(pkg:String,userId:Int): Int
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE receiverPackage=:pkg AND virtualUserId=:userId") suspend fun receivedCount(pkg:String,userId:Int): Int
 }
-@Dao interface VirtualRuntimeDao { @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity); @Query("UPDATE virtual_runtime_sessions SET state=:state,lastError=:error WHERE id=:id") suspend fun update(id:String,state:String,error:String?); @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVE'") suspend fun activeCount(): Int }
+@Dao interface VirtualRuntimeDao {
+    @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity)
+    @Query("SELECT * FROM virtual_runtime_sessions ORDER BY lastActivityAt DESC") fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>>
+    @Query("SELECT * FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId LIMIT 1") suspend fun forPackage(packageName:String,userId:Int): VirtualRuntimeSessionEntity?
+    @Query("UPDATE virtual_runtime_sessions SET state=:state,lastActivityAt=:now,startedAt=CASE WHEN :state='ACTIVE' THEN COALESCE(startedAt, :now) ELSE startedAt END,stoppedAt=CASE WHEN :state IN ('STOPPED','ERROR') THEN :now ELSE stoppedAt END,errorCode=:errorCode,sanitizedError=:error WHERE sessionId=:sessionId") suspend fun updateState(sessionId:String,state:String,now:Long,errorCode:String?,error:String?)
+    @Query("UPDATE virtual_runtime_sessions SET state='ERROR',stoppedAt=:now,lastActivityAt=:now,errorCode='ERROR_START_TIMEOUT',sanitizedError='La aplicación tardó más de 15 segundos en iniciar.' WHERE state='STARTING' AND createdAt < :deadline") suspend fun timeoutStarting(deadline:Long,now:Long)
+    @Query("UPDATE virtual_runtime_sessions SET state='ERROR',stoppedAt=:now,lastActivityAt=:now,errorCode='ERROR_STALE_STARTING',sanitizedError='Inicio anterior limpiado al abrir VirtualSpace.' WHERE state='STARTING'") suspend fun cleanupStarting(now:Long)
+    @Query("DELETE FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId AND state IN ('STOPPED','ERROR')") suspend fun deleteFinalizedFor(packageName:String,userId:Int)
+    @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVE'") suspend fun activeCount(): Int
+}
 @Dao interface VirtualSharedPermissionDao { @Upsert suspend fun upsert(permission: VirtualSharedPermissionEntity); @Query("SELECT permission FROM virtual_shared_permissions WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun permissions(packageName:String,userId:Int): List<String> }
 @Dao interface VirtualFsAccessLogDao { @Insert suspend fun insert(row: VirtualFsAccessLogEntity) }
 @Dao interface VirtualLaunchTokenDao { @Upsert suspend fun upsert(token: VirtualLaunchTokenEntity); @Query("SELECT * FROM virtual_launch_tokens WHERE token=:token AND consumedAt IS NULL") suspend fun getFresh(token:String): VirtualLaunchTokenEntity?; @Query("UPDATE virtual_launch_tokens SET consumedAt=:time WHERE token=:token") suspend fun consume(token:String,time:Long) }
@@ -57,7 +80,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class], version=4, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class], version=5, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
