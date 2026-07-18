@@ -150,6 +150,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     private var exportPackage by mutableStateOf<VirtualPackageEntity?>(null)
     private var sortMode by mutableStateOf("nombre")
     private var pendingExternalInstall by mutableStateOf<VirtualPackageEntity?>(null)
+    private var pendingViewerCrash by mutableStateOf<String?>(null)
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) importStatus = "Selección cancelada" else importUri(uri)
@@ -177,6 +178,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installViewerCrashReporter()
+        pendingViewerCrash = CrashReportRepository(CrashReportStore(applicationContext)).latest()
         repository = VirtualRepository(applicationContext)
         settingsStore = VirtualSpaceSettingsStore(applicationContext)
         resourceTracker = RuntimeResourceTracker(applicationContext)
@@ -186,6 +189,34 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         runtimeController = RuntimeSessionController(runtimeSessions, repository.db, runtimeMetrics)
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileStartup() }
         setContent { AppUi() }
+    }
+
+    private fun installViewerCrashReporter() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val runtime = Runtime.getRuntime()
+                CrashReportRepository(CrashReportStore(applicationContext)).save(
+                    CrashReportEntity(
+                        appVersion = BuildConfig.VERSION_NAME,
+                        buildCommit = BuildConfig.GIT_COMMIT,
+                        threadName = thread.name,
+                        exceptionClass = throwable::class.java.name,
+                        sanitizedMessage = throwable.message?.take(500),
+                        sanitizedStackTrace = throwable.stackTraceToString().take(12_000),
+                        activeDestination = destination.name,
+                        viewerType = (fileDestination as? FileDestination.HexViewer)?.let { "HEX" } ?: fileDestination::class.java.simpleName,
+                        virtualPath = when (val d = fileDestination) { is FileDestination.Browser -> d.path; is FileDestination.TextViewer -> d.path; is FileDestination.JsonViewer -> d.path; is FileDestination.XmlViewer -> d.path; is FileDestination.SQLiteViewer -> d.path; is FileDestination.ApkViewer -> d.path; is FileDestination.ImageViewer -> d.path; is FileDestination.HexViewer -> d.path },
+                        fileSize = null,
+                        availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory()),
+                        javaHeapUsed = runtime.totalMemory() - runtime.freeMemory(),
+                        nativeHeapApprox = android.os.Debug.getNativeHeapAllocatedSize(),
+                        lastVfsOperation = "viewer"
+                    )
+                )
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
     }
 
     @Composable
@@ -233,6 +264,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
 
         MaterialTheme {
+            pendingViewerCrash?.let { crash -> AlertDialog(onDismissRequest = {}, title = { Text("Valcrono VirtualSpace se cerró mientras intentaba abrir un archivo.") }, text = { Text(crash.take(1200)) }, confirmButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono viewer crash", crash)) }) { Text("Copiar error") } }, dismissButton = { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { TextButton(onClick = { importStatus = crash }) { Text("Ver diagnóstico") }; TextButton(onClick = { pendingViewerCrash = null }) { Text("Volver a intentar") }; TextButton(onClick = { CrashReportRepository(CrashReportStore(applicationContext)).clear(); pendingViewerCrash = null }) { Text("Descartar") } } }) }
             pendingExternalInstall?.let { pkg -> ExternalInstallDialog(pkg) }
             Scaffold(
                 modifier = Modifier.safeDrawingPadding().imePadding(),
@@ -651,7 +683,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     @Composable
     private fun GlobalFileDestination(packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings) {
-        val vfs = remember(packages) { com.valcrono.virtualstorage.VirtualFileSystem(com.valcrono.virtualstorage.VirtualFsNamespace(filesDir) { packages.map { it.packageName } }) }
+        val packageNames = remember(packages) { packages.map { it.packageName } }
+        val vfs = remember { VirtualFileSystemProvider.get(applicationContext) { packageNames } }
         when (val dest = fileDestination) {
             is FileDestination.Browser -> GlobalFileExplorer(vfs, dest.path, settings)
             is FileDestination.TextViewer -> TextFileViewer(vfs, dest.path)
@@ -714,27 +747,39 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     @Composable
     private fun TextFileViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String, kind: String = "Texto") {
-        var text by remember(path) { mutableStateOf("Cargando…") }; var meta by remember(path) { mutableStateOf("") }
-        LaunchedEffect(path) { withContext(Dispatchers.IO) {
-            val stat = vfs.stat(path, vfsAdminContext); val bytes = vfs.readBytes(path, vfsAdminContext, if (stat.size <= 2L*1024L*1024L) 2L*1024L*1024L else 64L*1024L)
-            val decoded = runCatching { String(bytes, Charsets.UTF_8) }.getOrElse { String(bytes, Charsets.ISO_8859_1) }
-            meta = "Ruta virtual: $path\nTamaño: ${formatBytes(stat.size)} · Fecha: ${date(stat.modifiedAt)} · Codificación: UTF-8/ISO-8859-1 · Líneas: ${decoded.lines().size}"
-            text = if (stat.size > 2L*1024L*1024L) decoded + "\n\n[Lectura paginada: se muestran los primeros 64 KB]" else decoded
-        } }
+        ViewerContent(vfs, ViewerRequest("${kind.lowercase(Locale.US)}:$path", path, path.substringBeforeLast('/', "").ifBlank { "/" }, if (kind == "JSON") ViewerType.JSON else if (kind == "XML") ViewerType.XML else ViewerType.TEXT))
+    }
+
+    @Composable private fun SQLiteViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String) { ViewerContent(vfs, ViewerRequest("sqlite:$path", path, path.substringBeforeLast('/', "").ifBlank { "/" }, ViewerType.SQLITE)) }
+    @Composable private fun ApkViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String) { ViewerContent(vfs, ViewerRequest("apk:$path", path, path.substringBeforeLast('/', "").ifBlank { "/" }, ViewerType.APK)) }
+    @Composable private fun HexViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String, title: String) { ViewerContent(vfs, ViewerRequest("hex:$path", path, path.substringBeforeLast('/', "").ifBlank { "/" }, if (title == "Imagen") ViewerType.IMAGE else ViewerType.HEX)) }
+
+    @Composable
+    private fun ViewerContent(vfs: com.valcrono.virtualstorage.VirtualFileSystem, request: ViewerRequest) {
+        val repository = remember(vfs) { FileViewerRepository(applicationContext, vfs) }
+        var state by remember(request.viewerId, request.virtualPath) { mutableStateOf<ViewerUiState>(ViewerUiState.Loading) }
+        var retryNonce by remember(request.viewerId, request.virtualPath) { mutableStateOf(0) }
+        LaunchedEffect(request.viewerId, request.virtualPath, request.fileModifiedAt, request.offset, retryNonce) { state = ViewerUiState.Loading; state = repository.load(request) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            item { TopAppBar(title = { Column { Text("$kind: ${path.substringAfterLast('/')}"); Text(path, maxLines = 1) } }, navigationIcon = { IconButton(onClick = { fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }) { Text("←") } }) }
-            item { Text(meta) }
-            item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Buscar", "Copiar", "Compartir/exportar", "Ajuste de línea", "Propiedades", "SHA-256").forEach { Button(onClick = { importStatus = it }) { Text(it) } } } }
-            item { androidx.compose.foundation.text.selection.SelectionContainer { Text(text) } }
+            item { TopAppBar(title={ Column { Text("${request.viewerType}: ${request.virtualPath.substringAfterLast('/')}", maxLines = 1, overflow = TextOverflow.Ellipsis); Text(request.virtualPath, maxLines = 1, overflow = TextOverflow.Ellipsis) } }, navigationIcon={ IconButton(onClick={ fileDestination = FileDestination.Browser(request.parentPath) }){ Text("←") } }) }
+            when (val s = state) {
+                ViewerUiState.Loading -> item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Cargando…"); Text("Archivo: ${request.virtualPath.substringAfterLast('/')}"); Text("Tipo: ${request.viewerType}"); Text("Ruta: …/${request.virtualPath.takeLast(48)}"); Button(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Cancelar") } } }
+                is ViewerUiState.Error -> item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(s.userMessage, style = MaterialTheme.typography.titleMedium); Text("Código: ${s.code}"); s.technicalMessage?.let { Text("Detalle: $it") }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { retryNonce++ }) { Text("Reintentar") }; Button(onClick = { importStatus = "Propiedades: ${request.virtualPath}" }) { Text("Abrir propiedades") }; Button(onClick = { importStatus = "Exportar: ${request.virtualPath}" }) { Text("Exportar archivo") }; OutlinedButton(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Volver") } } } } }
+                is ViewerUiState.Ready<*> -> item { RenderViewerData(s.data, request) }
+            }
         }
     }
 
-    @Composable private fun SQLiteViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String) { HexViewer(vfs, path, "SQLite snapshot (solo lectura): tablas, columnas, índices y primeras 100 filas al ejecutar en Android") }
-    @Composable private fun ApkViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String) { HexViewer(vfs, path, "APK: metadata, permisos, componentes, firma y SHA-256") }
-    @Composable private fun HexViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String, title: String) {
-        var body by remember(path) { mutableStateOf("Cargando…") }
-        LaunchedEffect(path) { withContext(Dispatchers.IO) { val stat=vfs.stat(path, vfsAdminContext); val bytes=vfs.readRange(path, vfsAdminContext, 0, 4096); val sha=vfs.calculateSha256(path, vfsAdminContext); body="Ruta virtual: $path\nTamaño: ${formatBytes(stat.size)}\nSHA-256: $sha\nPrimeros 4 KB:\n" + bytes.joinToString(" ") { "%02X".format(it) } } }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) { item { TopAppBar(title={Text(title)}, navigationIcon={IconButton(onClick={ fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }){Text("←")}}) }; item { Text(body) } }
+    @Composable
+    private fun RenderViewerData(data: Any?, request: ViewerRequest) {
+        when (data) {
+            is HexViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(data.summary); Text("Ruta virtual: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nOffset: ${data.offset}"); if (data.rows.isEmpty()) Text("Archivo vacío") else data.rows.forEach { Text(it) }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { importStatus = "Página anterior" }) { Text("Página anterior") }; Button(onClick = { importStatus = "Página siguiente" }) { Text("Página siguiente") }; Button(onClick = { importStatus = "Ir al offset" }) { Text("Ir al offset") } } }
+            is TextViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Ruta virtual: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)} · Codificación: ${data.encoding} · Líneas: ${data.lineCount}"); data.warning?.let { Text(it) }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Buscar", "Copiar", "Compartir/exportar", "Ajuste de línea", "Propiedades", "SHA-256").forEach { Button(onClick = { importStatus = it }) { Text(it) } } }; androidx.compose.foundation.text.selection.SelectionContainer { Text(data.text) } }
+            is SQLiteViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("SQLite snapshot: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}"); Text("Tablas:"); data.tables.ifEmpty { listOf("(sin tablas)") }.forEach { Text("• $it") } }
+            is ApkViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("APK: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nSHA-256: ${data.sha256}"); data.warning?.let { Text(it) } }
+            is ImageViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Imagen: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nDimensiones: ${data.width} × ${data.height}\nSample: ${data.sampleSize}") }
+            else -> Text("Visor listo: ${request.virtualPath}")
+        }
     }
 
     @Composable
