@@ -12,7 +12,7 @@ private val Context.virtualSpaceDataStore by preferencesDataStore("virtualspace_
 
 data class VirtualSpaceSettings(
     val performanceProfile: MemoryProfile = MemoryProfile.AUTOMATIC,
-    val maxActiveApps: Int = 1,
+    val maxActiveApps: Int = 2,
     val maxPausedSessions: Int = 1,
     val cacheBudgetMb: Int = 64,
     val inactiveTimeoutMinutes: Int = 5,
@@ -86,7 +86,7 @@ class VirtualSpaceSettingsStore(private val context: Context) {
             backupSha256 = prefs[Keys.backupSha256] ?: true,
             backupBeforeDelete = prefs[Keys.backupBeforeDelete] ?: true,
             showStackTraces = prefs[Keys.showStackTraces] ?: false,
-            maxActiveApps = prefs[Keys.maxActiveApps] ?: 1,
+            maxActiveApps = prefs[Keys.maxActiveApps] ?: 2,
             openAnotherAppPolicy = prefs[Keys.openAnotherAppPolicy]?.let { runCatching { OpenAnotherAppPolicy.valueOf(it) }.getOrNull() } ?: OpenAnotherAppPolicy.PAUSE_CURRENT,
             maxCacheStorageMb = prefs[Keys.maxCacheStorageMb] ?: 256,
             warnLowStorage = prefs[Keys.warnLowStorage] ?: true,
@@ -101,7 +101,7 @@ class VirtualSpaceSettingsStore(private val context: Context) {
     suspend fun setFlagSecure(value: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.flagSecureEnabled] = value } }
     suspend fun setBool(key: String, value: Boolean) { context.virtualSpaceDataStore.edit { it[booleanPreferencesKey(key)] = value } }
     suspend fun setFirstRunComplete(done: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.firstRunComplete] = done } }
-    suspend fun setMaxActiveApps(value: Int) { context.virtualSpaceDataStore.edit { it[Keys.maxActiveApps] = value.coerceIn(1, 3) } }
+    suspend fun setMaxActiveApps(value: Int) { context.virtualSpaceDataStore.edit { it[Keys.maxActiveApps] = value.coerceIn(1, 2) } }
     suspend fun setOpenAnotherAppPolicy(policy: OpenAnotherAppPolicy) { context.virtualSpaceDataStore.edit { it[Keys.openAnotherAppPolicy] = policy.name } }
     suspend fun setMaxCacheStorageMb(value: Int) { context.virtualSpaceDataStore.edit { it[Keys.maxCacheStorageMb] = value.coerceAtLeast(1) } }
     suspend fun setWarnLowStorage(value: Boolean) { context.virtualSpaceDataStore.edit { it[Keys.warnLowStorage] = value } }
