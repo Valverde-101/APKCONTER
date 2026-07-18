@@ -40,50 +40,8 @@ data class VirtualSharedPermissionEntity(val packageName:String,val virtualUserI
 data class VirtualFsAccessLogEntity(val id:String,val virtualUserId:Int,val packageName:String?,val role:String,val virtualPath:String,val operation:String,val allowed:Boolean,val at:Long)
 @Entity(tableName = "virtual_launch_tokens", primaryKeys = ["token"])
 data class VirtualLaunchTokenEntity(val token:String,val sessionId:String,val launchAttemptId:String,val virtualUserId:Int,val packageName:String,val activityName:String,val createdAt:Long,val expiresAt:Long,val consumedAt:Long?)
-
-@Entity(
-    tableName = "runtime_slots",
-    indices = [Index(value = ["sessionId"], unique = true), Index(value = ["packageName", "virtualUserId"])]
-)
-data class RuntimeSlotEntity(
-    @PrimaryKey val slotId:String,
-    val processName:String,
-    val state:String,
-    val packageName:String?,
-    val virtualUserId:Int?,
-    val sessionId:String?,
-    val launchAttemptId:String?,
-    val hostPid:Int?,
-    val assignedAt:Long?,
-    val startedAt:Long?,
-    val lastHeartbeatAt:Long?,
-    val stoppedAt:Long?,
-    val pssBytes:Long?,
-    val errorCode:String?,
-    val errorMessage:String?
-)
-
 @Entity(tableName = "virtual_messages", indices = [Index("receiverPackage"), Index("senderPackage")])
 data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUserId:Int,val senderPackage:String,val receiverPackage:String,val type:String,val payload:String,val createdAt:Long,val deliveredAt:Long?,val consumedAt:Long?,val status:String,val attemptCount:Int)
-
-
-@Dao interface RuntimeSlotDao {
-    @Query("SELECT * FROM runtime_slots ORDER BY slotId") suspend fun getAll(): List<RuntimeSlotEntity>
-    @Query("SELECT * FROM runtime_slots WHERE slotId=:slotId LIMIT 1") suspend fun get(slotId:String): RuntimeSlotEntity?
-    @Query("SELECT * FROM runtime_slots WHERE sessionId=:sessionId LIMIT 1") suspend fun findBySession(sessionId:String): RuntimeSlotEntity?
-    @Query("SELECT * FROM runtime_slots WHERE packageName=:packageName AND virtualUserId=:virtualUserId LIMIT 1") suspend fun findByPackage(packageName:String, virtualUserId:Int): RuntimeSlotEntity?
-    @Query("SELECT * FROM runtime_slots WHERE state IN ('FREE','STOPPED') AND slotId IN (:enabledSlotIds) ORDER BY slotId LIMIT 1") suspend fun firstFree(enabledSlotIds: List<String>): RuntimeSlotEntity?
-    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertDefaults(slots: List<RuntimeSlotEntity>)
-    @Query("UPDATE runtime_slots SET state='RESERVED', packageName=:packageName, virtualUserId=:virtualUserId, sessionId=:sessionId, launchAttemptId=:attemptId, hostPid=NULL, assignedAt=:now, startedAt=NULL, lastHeartbeatAt=:now, stoppedAt=NULL, pssBytes=NULL, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId AND state IN ('FREE','STOPPED','CRASHED','ERROR')") suspend fun reserveSlot(slotId:String, packageName:String, virtualUserId:Int, sessionId:String, attemptId:String, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='STARTING', sessionId=:sessionId, launchAttemptId=:attemptId, assignedAt=:now, lastHeartbeatAt=:now, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId") suspend fun reserveExisting(slotId:String, sessionId:String, attemptId:String, now:Long): Int
-    @Query("UPDATE runtime_slots SET state=:toState WHERE slotId=:slotId AND state=:fromState") suspend fun compareAndSetState(slotId:String, fromState:String, toState:String): Int
-    @Query("UPDATE runtime_slots SET state=:state, hostPid=:pid, startedAt=COALESCE(startedAt,:now), lastHeartbeatAt=:now, pssBytes=:pssBytes, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId AND sessionId=:sessionId AND launchAttemptId=:attemptId") suspend fun acknowledgeStarted(slotId:String, sessionId:String, attemptId:String, pid:Int, state:String, pssBytes:Long?, now:Long): Int
-    @Query("UPDATE runtime_slots SET lastHeartbeatAt=:now, hostPid=:pid, state=:state, pssBytes=:pssBytes WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun heartbeat(slotId:String, sessionId:String, pid:Int, state:String, pssBytes:Long?, now:Long): Int
-    @Query("UPDATE runtime_slots SET pssBytes=:pssBytes, lastHeartbeatAt=:now, hostPid=:pid WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun updatePss(slotId:String, sessionId:String, pid:Int, pssBytes:Long, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='CRASHED', errorCode=:code, errorMessage=:message, stoppedAt=:now WHERE slotId=:slotId") suspend fun markCrashed(slotId:String, code:String, message:String?, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId") suspend fun release(slotId:String, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='CRASHED', errorCode='STALE_HEARTBEAT', errorMessage='Heartbeat vencido', stoppedAt=:now WHERE state IN ('RESERVED','STARTING','ACTIVE_FOREGROUND','ACTIVE_BACKGROUND') AND lastHeartbeatAt < :deadline") suspend fun recoverStaleSlots(deadline:Long, now:Long): Int
-}
 
 @Dao interface VirtualPackageDao {
     @Upsert suspend fun upsertPackage(pkg: VirtualPackageEntity)
@@ -132,7 +90,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=7, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class], version=6, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
@@ -145,5 +103,4 @@ abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun sharedPermissions(): VirtualSharedPermissionDao
     abstract fun fsAccessLog(): VirtualFsAccessLogDao
     abstract fun launchTokens(): VirtualLaunchTokenDao
-    abstract fun runtimeSlots(): RuntimeSlotDao
 }
