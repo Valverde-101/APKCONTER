@@ -111,7 +111,7 @@ class VirtualFsResolver(private val namespace: VirtualFsNamespace) {
         return synthetic(p.substringAfterLast('/'), VirtualFsNodeType.MISSING)
     }
     private fun packageData(p:String,userId:Int,pkg:String,tail:String): VirtualFsResolution = VirtualFsResolution(fileNode(p, namespace.packageRoot(userId,pkg).resolve("data${tail}"), pkg))
-    private fun fileNode(p:String,f:File,pkg:String?,readOnly:Boolean=false,owner:String=pkg ?: "system") = VirtualFsNode(p.substringAfterLast('/').ifBlank { f.name }, p, when { f.isDirectory -> VirtualFsNodeType.DIRECTORY; f.isFile -> VirtualFsNodeType.FILE; else -> VirtualFsNodeType.MISSING }, f.takeIf{it.isFile}?.length() ?: 0, f.lastModified(), if (readOnly) "r--" else "rw-", owner, pkg, f, readOnly)
+    private fun fileNode(p:String,f:File,pkg:String?,readOnly:Boolean=false,owner:String=pkg ?: "system") = VirtualFsNode(f.name.ifBlank{p.substringAfterLast('/')}, p, when { f.isDirectory -> VirtualFsNodeType.DIRECTORY; f.isFile -> VirtualFsNodeType.FILE; else -> VirtualFsNodeType.MISSING }, f.takeIf{it.isFile}?.length() ?: 0, f.lastModified(), if (readOnly) "r--" else "rw-", owner, pkg, f, readOnly)
 }
 
 data class VirtualFsStat(val virtualPath: String, val name: String, val type: VirtualFsNodeType, val size: Long, val modifiedAt: Long, val permissions: String, val owner: String, val packageName: String?, val readOnly: Boolean)
@@ -166,8 +166,6 @@ class VirtualFileSystem(private val namespace: VirtualFsNamespace, private val r
             "/data/data" -> namespace.installedPackages(context.virtualUserId).map { "/data/data/$it" }
             "/data/user" -> listOf("/data/user/${context.virtualUserId}")
             "/data/user/${context.virtualUserId}" -> namespace.installedPackages(context.virtualUserId).map { "/data/user/${context.virtualUserId}/$it" }
-            "/storage" -> listOf("/storage/emulated")
-            "/storage/emulated" -> listOf("/storage/emulated/${context.virtualUserId}")
             "/storage/emulated/${context.virtualUserId}" -> listOf("/storage/emulated/${context.virtualUserId}/Android", "/storage/emulated/${context.virtualUserId}/Shared")
             "/proc" -> listOf("/proc/virtualspace","/proc/apps")
             "/proc/virtualspace" -> listOf("/proc/virtualspace/status","/proc/virtualspace/meminfo")
