@@ -1,6 +1,6 @@
 import java.time.Instant
 
-plugins { alias(libs.plugins.android.application); alias(libs.plugins.kotlin.android); alias(libs.plugins.compose); alias(libs.plugins.ksp) }
+plugins { alias(libs.plugins.android.application); alias(libs.plugins.kotlin.android); alias(libs.plugins.compose); alias(libs.plugins.ksp); id("kotlin-parcelize") }
 
 android { namespace="com.valcrono.virtualspace"; compileSdk=35
  defaultConfig {
