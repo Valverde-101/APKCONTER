@@ -47,12 +47,7 @@ class SQLiteSnapshotManager(private val context: Context, private val vfs: Virtu
     }
 }
 
-interface SQLiteRepositoryApi {
-    suspend fun getTableRows(snapshotId: String, tableName: String, offset: Int, limit: Int): SQLitePageData
-    suspend fun closeSnapshot(snapshotId: String)
-}
-
-class SQLiteViewerRepository(private val context: Context, private val vfs: VirtualFileSystem) : SQLiteRepositoryApi {
+class SQLiteViewerRepository(private val context: Context, private val vfs: VirtualFileSystem) {
     companion object { private val snapshots = ConcurrentHashMap<String, SQLiteSnapshotHandle>() }
     private val snapshotManager = SQLiteSnapshotManager(context, vfs)
     private val q = SQLiteIdentifierQuoter
@@ -64,9 +59,9 @@ class SQLiteViewerRepository(private val context: Context, private val vfs: Virt
         handle.database.toDatabaseData(virtualPath, stat.size, handle.snapshot.id)
     }
     suspend fun getTableSchema(snapshotId: String, tableName: String): SQLiteTableSummary = withContext(Dispatchers.IO) { handle(snapshotId).database.tableSummary(tableName) }
-    override suspend fun getTableRows(snapshotId: String, tableName: String, offset: Int, limit: Int): SQLitePageData = withContext(Dispatchers.IO) { handle(snapshotId).database.page(tableName, offset, limit.coerceIn(25, 500)) }
+    suspend fun getTableRows(snapshotId: String, tableName: String, offset: Int, limit: Int): SQLitePageData = withContext(Dispatchers.IO) { handle(snapshotId).database.page(tableName, offset, limit.coerceIn(25, 500)) }
     suspend fun getRowDetail(snapshotId: String, tableName: String, rowIndex: Long): SQLiteRowData = withContext(Dispatchers.IO) { handle(snapshotId).database.page(tableName, rowIndex.toInt(), 1).rows.firstOrNull() ?: error("SQLITE_PAGE_OUT_OF_RANGE") }
-    override suspend fun closeSnapshot(snapshotId: String) = withContext(Dispatchers.IO) { snapshots.remove(snapshotId)?.close() ?: Unit }
+    suspend fun closeSnapshot(snapshotId: String) = withContext(Dispatchers.IO) { snapshots.remove(snapshotId)?.close() ?: Unit }
 
     private fun handle(id: String) = snapshots[id] ?: error("SQLITE_SNAPSHOT_EXPIRED")
     private fun SQLiteDatabase.toDatabaseData(path:String, size:Long, id:String): SQLiteDatabaseData {
