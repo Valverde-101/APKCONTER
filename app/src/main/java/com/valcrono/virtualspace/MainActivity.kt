@@ -1094,14 +1094,13 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             if (!prepared.shouldStartActivity) { importStatus = "Sesión existente reutilizada: ${pkg.label}"; return@launch }
             logLaunch("INTENT_SENT", prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, pkg.packageName, pkg.virtualUserId, "STARTING", "STARTING")
             startActivity(
-                Intent(this@MainActivity, proxyActivityFor(prepared.slotId ?: RuntimeSlotId.VAPP0))
+                Intent(this@MainActivity, ProxyActivity::class.java)
                     .putExtra("virtualUserId", pkg.virtualUserId)
                     .putExtra("virtualPackageName", pkg.packageName)
                     .putExtra("virtualActivityName", activity)
                     .putExtra("sessionId", prepared.sessionId)
                     .putExtra("launchAttemptId", prepared.launchAttemptId)
-                    .putExtra("launchToken", prepared.launchToken)
-                    .putExtra("slotId", prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name),
+                    .putExtra("launchToken", prepared.launchToken),
             )
         }
     }
