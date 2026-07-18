@@ -36,9 +36,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
@@ -684,7 +686,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     @Composable
     private fun GlobalFileDestination(packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings) {
         val packageNames = remember(packages) { packages.map { it.packageName } }
-        val vfs = remember { VirtualFileSystemProvider.get(applicationContext) { packageNames } }
+        val vfs = remember(packageNames) { VirtualFileSystemProvider.get(applicationContext) { packageNames } }
         when (val dest = fileDestination) {
             is FileDestination.Browser -> GlobalFileExplorer(vfs, dest.path, settings)
             is FileDestination.TextViewer -> TextFileViewer(vfs, dest.path)
@@ -758,14 +760,88 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     @Composable
     private fun RenderViewerData(data: Any?, request: ViewerRequest) {
+        var viewerSnackbar by remember(request.viewerId, request.virtualPath) { mutableStateOf<String?>(null) }
         when (data) {
-            is HexViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(data.summary); Text("Ruta virtual: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nOffset: ${data.offset}"); if (data.rows.isEmpty()) Text("Archivo vacío") else data.rows.forEach { Text(it) }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { importStatus = "Página anterior" }) { Text("Página anterior") }; Button(onClick = { importStatus = "Página siguiente" }) { Text("Página siguiente") }; Button(onClick = { importStatus = "Ir al offset" }) { Text("Ir al offset") } } }
+            is HexViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { viewerSnackbar?.let { Text(it) }; Text(data.summary); Text("Ruta virtual: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nOffset: ${data.offset}"); if (data.rows.isEmpty()) Text("Archivo vacío") else data.rows.forEach { Text(it) }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(enabled = data.fileSize > 0 && data.offset > 0, onClick = { viewerSnackbar = "Página anterior" }) { Text("Página anterior") }; Button(enabled = data.fileSize > 0 && data.offset + data.bytes.size < data.fileSize, onClick = { viewerSnackbar = "Página siguiente" }) { Text("Página siguiente") }; Button(enabled = data.fileSize > 0, onClick = { viewerSnackbar = "Ir al offset" }) { Text("Ir al offset") } } }
             is TextViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Ruta virtual: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)} · Codificación: ${data.encoding} · Líneas: ${data.lineCount}"); data.warning?.let { Text(it) }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Buscar", "Copiar", "Compartir/exportar", "Ajuste de línea", "Propiedades", "SHA-256").forEach { Button(onClick = { importStatus = it }) { Text(it) } } }; androidx.compose.foundation.text.selection.SelectionContainer { Text(data.text) } }
-            is SQLiteViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("SQLite snapshot: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}"); Text("Tablas:"); data.tables.ifEmpty { listOf("(sin tablas)") }.forEach { Text("• $it") } }
+            is SQLiteViewerData -> SQLiteDatabaseOverview(data)
             is ApkViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("APK: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nSHA-256: ${data.sha256}"); data.warning?.let { Text(it) } }
             is ImageViewerData -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Imagen: ${data.virtualPath}\nTamaño: ${formatBytes(data.fileSize)}\nDimensiones: ${data.width} × ${data.height}\nSample: ${data.sampleSize}") }
             else -> Text("Visor listo: ${request.virtualPath}")
         }
+    }
+
+    @Composable
+    private fun SQLiteDatabaseOverview(data: SQLiteDatabaseData) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("SQLite snapshot: ${data.virtualPath}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("Tamaño: ${formatBytes(data.fileSize)} · user_version=${data.userVersion} · page_size=${data.pageSize} · journal=${data.journalMode} · PRAGMA query_only=1")
+            Text("Tablas", style = MaterialTheme.typography.titleMedium)
+            data.tables.ifEmpty { listOf(SQLiteTableSummary("(sin tablas)", null, 0, emptyList(), emptyList())) }.forEach { table ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val system = table.name == "android_metadata" || table.name == "sqlite_sequence"
+                        Text(table.name + if (system) " · Sistema" else "", style = MaterialTheme.typography.titleMedium)
+                        Text("${table.columns.size} columnas · ${table.estimatedRowCount ?: "?"} filas")
+                        table.createSql?.let { Text(it, maxLines = 6, overflow = TextOverflow.Ellipsis) }
+                        Text("Columnas reales")
+                        table.columns.forEach { c -> Text("${c.name} · ${c.declaredType.ifBlank { "(sin tipo)" }} · notNull=${c.notNull} · pk=${c.primaryKeyPosition}" + if (c.hidden != 0) " · oculta/generada=${c.hidden}" else "") }
+                        if (table.indexes.isNotEmpty()) {
+                            Text("Índices")
+                            table.indexes.forEach { idx -> Text("${idx.name} · unique=${idx.unique} · ${idx.columns.joinToString()}") }
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {}) { Text("Ver estructura") }
+                            Button(onClick = {}) { Text("Ver datos") }
+                            OutlinedButton(onClick = {}) { Text("Exportar esquema JSON") }
+                        }
+                        SQLiteRowsPreview(data, table)
+                    }
+                }
+            }
+            if (data.views.isNotEmpty()) { Text("Vistas", style = MaterialTheme.typography.titleMedium); data.views.forEach { Text("👁 ${it.name}") } }
+            if (data.indexes.isNotEmpty()) { Text("Índices globales", style = MaterialTheme.typography.titleMedium); data.indexes.forEach { Text("▥ ${it.name} · tabla=${it.tableName ?: "—"} · unique=${it.unique}") } }
+            if (data.triggers.isNotEmpty()) { Text("Triggers", style = MaterialTheme.typography.titleMedium); data.triggers.forEach { Text("⚡ $it") } }
+        }
+    }
+
+    @Composable
+    private fun SQLiteRowsPreview(data: SQLiteDatabaseData, table: SQLiteTableSummary) {
+        var page by remember(data.snapshotId, table.name) { mutableStateOf<SQLitePageData?>(null) }
+        var error by remember(data.snapshotId, table.name) { mutableStateOf<String?>(null) }
+        LaunchedEffect(data.snapshotId, table.name) {
+            runCatching { SQLiteViewerRepository(applicationContext, VirtualFileSystemProvider.get(applicationContext) { emptyList() }).getTableRows(data.snapshotId, table.name, 0, 100) }
+                .onSuccess { page = it }.onFailure { error = "No se pudo leer la tabla ${table.name}: ${it.message}" }
+        }
+        error?.let { Text(it) }
+        page?.let { p ->
+            Text("Datos · Página ${(p.offset / p.limit) + 1} de ${maxOf(1, ((p.totalRows + p.limit - 1) / p.limit).toInt())}")
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                Column {
+                    Row { Text("#", Modifier.width(64.dp)); p.columns.forEach { Text(it, Modifier.width(160.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) } }
+                    p.rows.forEach { row ->
+                        Row {
+                            Text(row.rowNumber.toString(), Modifier.width(64.dp))
+                            row.cells.forEach { cell -> Text(sqliteCellLabel(cell), Modifier.width(160.dp), maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                        }
+                    }
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = p.hasPrevious, onClick = {}) { Text("Anterior") }
+                Text("Filas por página: ${p.limit}")
+                Button(enabled = p.hasNext, onClick = {}) { Text("Siguiente") }
+                OutlinedButton(onClick = {}) { Text("Exportar página CSV") }
+            }
+        } ?: Text("Cargando filas…")
+    }
+
+    private fun sqliteCellLabel(cell: SQLiteCellData): String = when (cell) {
+        SQLiteCellData.NullValue -> "NULL"
+        is SQLiteCellData.IntegerValue -> cell.value.toString()
+        is SQLiteCellData.RealValue -> cell.value.toString()
+        is SQLiteCellData.TextValue -> cell.value + if (cell.truncated) "…" else ""
+        is SQLiteCellData.BlobValue -> "BLOB · ${cell.size} bytes"
     }
 
     @Composable
