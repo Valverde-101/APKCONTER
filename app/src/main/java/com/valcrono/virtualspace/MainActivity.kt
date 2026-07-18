@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
@@ -279,7 +280,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
 
         MaterialTheme {
-            pendingViewerCrash?.let { crash -> AlertDialog(onDismissRequest = { pendingViewerCrash = null }, title = { Text("Valcrono VirtualSpace se cerró mientras intentaba abrir un archivo.") }, text = { Text(crash.take(1200)) }, confirmButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono viewer crash", crash)) }) { Text("Copiar error") } }, dismissButton = { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { TextButton(onClick = { importStatus = crash }) { Text("Ver diagnóstico") }; TextButton(onClick = { pendingViewerCrash = null }) { Text("Volver a intentar") }; TextButton(onClick = { CrashReportRepository(CrashReportStore(applicationContext)).clear(); pendingViewerCrash = null }) { Text("Descartar") } } }) }
+            var localViewerDiagnostic by remember { mutableStateOf<String?>(null) }
+            pendingViewerCrash?.let { crash -> AlertDialog(onDismissRequest = { pendingViewerCrash = null }, title = { Text("Valcrono VirtualSpace se cerró mientras intentaba abrir un archivo.") }, text = { Text(crash.take(1200)) }, confirmButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono viewer crash", crash)) }) { Text("Copiar error") } }, dismissButton = { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { TextButton(onClick = { localViewerDiagnostic = crash }) { Text("Ver diagnóstico") }; TextButton(onClick = { pendingViewerCrash = null }) { Text("Volver a intentar") }; TextButton(onClick = { CrashReportRepository(CrashReportStore(applicationContext)).clear(); pendingViewerCrash = null; localViewerDiagnostic = null }) { Text("Descartar") } } }) }
+            localViewerDiagnostic?.let { diagnostic -> AlertDialog(onDismissRequest = { localViewerDiagnostic = null }, title = { Text("Diagnóstico del visor") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(diagnostic.take(4000)) } }, confirmButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono viewer diagnostic", diagnostic)) }) { Text("Copiar") } }, dismissButton = { TextButton(onClick = { localViewerDiagnostic = null }) { Text("Cerrar") } }) }
             pendingExternalInstall?.let { pkg -> ExternalInstallDialog(pkg) }
             Scaffold(
                 modifier = Modifier.safeDrawingPadding().imePadding(),
@@ -761,14 +764,25 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         var state by remember(request.viewerId, request.virtualPath) { mutableStateOf<ViewerUiState>(ViewerUiState.Loading) }
         var retryNonce by remember(request.viewerId, request.virtualPath) { mutableStateOf(0) }
         LaunchedEffect(request.viewerId, request.virtualPath, request.fileModifiedAt, request.offset, retryNonce) { state = ViewerUiState.Loading; state = repository.load(request) }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            item { TopAppBar(title={ Column { Text("${request.viewerType}: ${request.virtualPath.substringAfterLast('/')}", maxLines = 1, overflow = TextOverflow.Ellipsis); Text(request.virtualPath, maxLines = 1, overflow = TextOverflow.Ellipsis) } }, navigationIcon={ IconButton(onClick={ fileDestination = FileDestination.Browser(request.parentPath) }){ Text("←") } }) }
-            when (val s = state) {
-                ViewerUiState.Loading -> item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Cargando…"); Text("Archivo: ${request.virtualPath.substringAfterLast('/')}"); Text("Tipo: ${request.viewerType}"); Text("Ruta: …/${request.virtualPath.takeLast(48)}"); Button(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Cancelar") } } }
-                is ViewerUiState.Error -> item { Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(s.userMessage, style = MaterialTheme.typography.titleMedium); Text("Código: ${s.code}"); s.technicalMessage?.let { Text("Detalle: $it") }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { retryNonce++ }) { Text("Reintentar") }; Button(onClick = { importStatus = "Propiedades: ${request.virtualPath}" }) { Text("Abrir propiedades") }; Button(onClick = { importStatus = "Exportar: ${request.virtualPath}" }) { Text("Exportar archivo") }; OutlinedButton(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Volver") } } } } }
-                is ViewerUiState.Ready<*> -> item { RenderViewerData(s.data, request) }
+        Scaffold(topBar = { TopAppBar(title={ Column { Text("${request.viewerType}: ${request.virtualPath.substringAfterLast('/')}", maxLines = 1, overflow = TextOverflow.Ellipsis); Text(request.virtualPath, maxLines = 1, overflow = TextOverflow.Ellipsis) } }, navigationIcon={ IconButton(onClick={ fileDestination = FileDestination.Browser(request.parentPath) }){ Text("←") } }) }) { innerPadding ->
+            Box(Modifier.fillMaxSize().padding(innerPadding)) {
+                when (val s = state) {
+                    ViewerUiState.Loading -> ViewerLoadingContent(request)
+                    is ViewerUiState.Error -> ViewerErrorContent(s, request) { retryNonce++ }
+                    is ViewerUiState.Ready<*> -> RenderViewerData(s.data, request)
+                }
             }
         }
+    }
+
+    @Composable
+    private fun ViewerLoadingContent(request: ViewerRequest) {
+        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Cargando…"); Text("Archivo: ${request.virtualPath.substringAfterLast('/')}"); Text("Tipo: ${request.viewerType}"); Text("Ruta: …/${request.virtualPath.takeLast(48)}"); Button(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Cancelar") } }
+    }
+
+    @Composable
+    private fun ViewerErrorContent(s: ViewerUiState.Error, request: ViewerRequest, onRetry: () -> Unit) {
+        Card(Modifier.fillMaxWidth().padding(16.dp)) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(s.userMessage, style = MaterialTheme.typography.titleMedium); Text("Código: ${s.code}"); s.technicalMessage?.let { Text("Detalle: $it") }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = onRetry) { Text("Reintentar") }; Button(onClick = { importStatus = "Propiedades: ${request.virtualPath}" }) { Text("Abrir propiedades") }; Button(onClick = { importStatus = "Exportar: ${request.virtualPath}" }) { Text("Exportar archivo") }; OutlinedButton(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Volver") } } } }
     }
 
     @Composable
@@ -832,97 +846,143 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 contentResolver.openOutputStream(uri)?.let { viewModel.writeExport(export, it) }
             }
         }
-        DisposableEffect(data.snapshotId) { onDispose { viewModel.closeSnapshotWhenViewerEnds(data.snapshotId) } }
+        DisposableEffect(data.snapshotId) { onDispose { viewModel.dispose() } }
         LaunchedEffect(state.message) { state.message?.let { snackbarHostState.showSnackbar(it); viewModel.onAction(SQLiteAction.ClearMessage) } }
         LaunchedEffect(state.exportRequest) { state.exportRequest?.let { export ->
             pendingExport = export
             exportLauncher.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = export.mimeType; putExtra(Intent.EXTRA_TITLE, export.fileName) })
         } }
-        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
-            Column(Modifier.padding(padding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (val screen = state.screen) {
-                    is SQLiteScreen.Overview, null -> SQLiteOverviewCompact(state, viewModel, request)
-                    is SQLiteScreen.Table -> SQLiteTableScreen(state, viewModel, screen)
-                    is SQLiteScreen.RowDetail -> SQLiteRowDetailScreen(state, viewModel, screen)
-                }
-            }
+        Box(Modifier.fillMaxSize()) {
+            SQLiteViewerNavigationContent(Modifier.fillMaxSize(), state, viewModel, request)
+            SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
         }
     }
 
     @Composable
-    private fun SQLiteOverviewCompact(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, request: ViewerRequest) {
+    private fun SQLiteViewerNavigationContent(modifier: Modifier = Modifier, state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, request: ViewerRequest) {
+        when (val screen = state.screen) {
+            is SQLiteScreen.Overview, null -> SQLiteOverviewCompact(state, viewModel, request, modifier)
+            is SQLiteScreen.Table -> SQLiteTableScreen(state, viewModel, screen, modifier)
+            is SQLiteScreen.RowDetail -> SQLiteRowDetailScreen(state, viewModel, screen, modifier)
+        }
+    }
+
+    @Composable
+    private fun SQLiteOverviewCompact(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, request: ViewerRequest, modifier: Modifier = Modifier) {
         val data = state.database ?: return
-        Text("SQLite snapshot: ${data.virtualPath}", maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("Tamaño: ${formatBytes(data.fileSize)} · user_version=${data.userVersion} · page_size=${data.pageSize} · journal=${data.journalMode} · PRAGMA query_only=1")
-        Text("Tablas", style = MaterialTheme.typography.titleMedium)
-        data.tables.forEach { table ->
-            var menuOpen by remember(table.name) { mutableStateOf(false) }
-            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val system = table.name == "android_metadata" || table.name == "sqlite_sequence"
-                Text(table.name + if (system) " · Sistema" else "", style = MaterialTheme.typography.titleMedium)
-                Text("${table.columns.size} columnas · ${table.estimatedRowCount ?: "?"} filas")
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { viewModel.onAction(SQLiteAction.OpenStructure(table.name)) }) { Text("Ver estructura") }
-                    Button(onClick = { viewModel.onAction(SQLiteAction.OpenData(table.name)) }) { Text("Ver datos") }
-                    Box { OutlinedButton(onClick = { menuOpen = true }) { Text("⋮") }; DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("Exportar esquema JSON") }, onClick = { menuOpen = false; viewModel.onAction(SQLiteAction.ExportSchema(table.name)) })
-                        DropdownMenuItem(text = { Text("Exportar tabla CSV") }, onClick = { menuOpen = false; viewModel.onAction(SQLiteAction.ExportTableCsv(table.name)) })
-                        DropdownMenuItem(text = { Text("Copiar CREATE TABLE") }, onClick = { menuOpen = false; (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("CREATE TABLE ${table.name}", table.createSql.orEmpty())) })
-                        DropdownMenuItem(text = { Text("Propiedades") }, onClick = { menuOpen = false; viewModel.onAction(SQLiteAction.OpenStructure(table.name)) })
-                    } }
-                }
-            } }
+        LazyColumn(modifier = modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Text("SQLite snapshot: ${data.virtualPath}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            item { Text("Tamaño: ${formatBytes(data.fileSize)} · user_version=${data.userVersion} · page_size=${data.pageSize} · journal=${data.journalMode} · PRAGMA query_only=1") }
+            item { Text("Tablas", style = MaterialTheme.typography.titleMedium) }
+            items(items = data.tables, key = { it.name }) { table -> SQLiteTableOverviewCard(table, viewModel) }
+            if (data.views.isNotEmpty()) item { SQLiteViewsSection(data.views) }
+            if (data.triggers.isNotEmpty()) item { SQLiteTriggersSection(data.triggers) }
+            item { OutlinedButton(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Volver a carpeta") } }
         }
-        if (data.views.isNotEmpty()) { Text("Vistas", style = MaterialTheme.typography.titleMedium); data.views.forEach { Text("👁 ${it.name}") } }
-        if (data.triggers.isNotEmpty()) { Text("Triggers", style = MaterialTheme.typography.titleMedium); data.triggers.forEach { Text("⚡ $it") } }
-        OutlinedButton(onClick = { fileDestination = FileDestination.Browser(request.parentPath) }) { Text("Volver a carpeta") }
     }
 
     @Composable
-    private fun SQLiteTableScreen(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, screen: SQLiteScreen.Table) {
+    private fun SQLiteTableOverviewCard(table: SQLiteTableSummary, viewModel: SQLiteViewerViewModel) {
+        var menuOpen by remember(table.name) { mutableStateOf(false) }
+        Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val system = table.name == "android_metadata" || table.name == "sqlite_sequence"
+            Text(table.name + if (system) " · Sistema" else "", style = MaterialTheme.typography.titleMedium)
+            Text("${table.columns.size} columnas · ${table.estimatedRowCount ?: "?"} filas")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { viewModel.onAction(SQLiteAction.OpenStructure(table.name)) }) { Text("Ver estructura") }
+                Button(onClick = { viewModel.onAction(SQLiteAction.OpenData(table.name)) }) { Text("Ver datos") }
+                Box { OutlinedButton(onClick = { menuOpen = true }) { Text("⋮") }; DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Exportar esquema JSON") }, onClick = { menuOpen = false; viewModel.onAction(SQLiteAction.ExportSchema(table.name)) })
+                    DropdownMenuItem(text = { Text("Exportar tabla CSV") }, onClick = { menuOpen = false; viewModel.onAction(SQLiteAction.ExportTableCsv(table.name)) })
+                    DropdownMenuItem(text = { Text("Copiar CREATE TABLE") }, onClick = { menuOpen = false; (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("CREATE TABLE ${table.name}", table.createSql.orEmpty())) })
+                    DropdownMenuItem(text = { Text("Propiedades") }, onClick = { menuOpen = false; viewModel.onAction(SQLiteAction.OpenStructure(table.name)) })
+                } }
+            }
+        } }
+    }
+
+    @Composable private fun SQLiteViewsSection(views: List<SQLiteViewSummary>) { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { Text("Vistas", style = MaterialTheme.typography.titleMedium); views.forEach { Text("👁 ${it.name}") } } }
+    @Composable private fun SQLiteTriggersSection(triggers: List<String>) { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { Text("Triggers", style = MaterialTheme.typography.titleMedium); triggers.forEach { Text("⚡ $it") } } }
+
+    @Composable
+    private fun SQLiteTableScreen(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, screen: SQLiteScreen.Table, modifier: Modifier = Modifier) {
         val table = state.selectedTable ?: state.database?.tables?.firstOrNull { it.name == screen.tableName } ?: return
-        Text("Tabla: ${table.name}", style = MaterialTheme.typography.titleLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SQLiteTableTab.entries.forEach { tab -> FilterChip(selected = screen.selectedTab == tab, onClick = { when(tab) { SQLiteTableTab.STRUCTURE -> viewModel.onAction(SQLiteAction.OpenStructure(table.name)); SQLiteTableTab.DATA -> viewModel.onAction(SQLiteAction.OpenData(table.name)); SQLiteTableTab.INDEXES -> viewModel.onAction(SQLiteAction.OpenIndexes(table.name)) } }, label = { Text(when(tab){SQLiteTableTab.STRUCTURE -> "Estructura"; SQLiteTableTab.DATA -> "Datos"; SQLiteTableTab.INDEXES -> "Índices"}) }) }
+        Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Tabla: ${table.name}", style = MaterialTheme.typography.titleLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SQLiteTableTab.entries.forEach { tab -> FilterChip(selected = screen.selectedTab == tab, onClick = { when(tab) { SQLiteTableTab.STRUCTURE -> viewModel.onAction(SQLiteAction.OpenStructure(table.name)); SQLiteTableTab.DATA -> viewModel.onAction(SQLiteAction.OpenData(table.name)); SQLiteTableTab.INDEXES -> viewModel.onAction(SQLiteAction.OpenIndexes(table.name)) } }, label = { Text(when(tab){SQLiteTableTab.STRUCTURE -> "Estructura"; SQLiteTableTab.DATA -> "Datos"; SQLiteTableTab.INDEXES -> "Índices"}) }) }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (screen.selectedTab) {
+                    SQLiteTableTab.STRUCTURE -> SQLiteStructureContent(table, viewModel, Modifier.fillMaxSize())
+                    SQLiteTableTab.INDEXES -> SQLiteIndexesContent(table, Modifier.fillMaxSize())
+                    SQLiteTableTab.DATA -> SQLiteTableData(state, viewModel, table, Modifier.fillMaxSize())
+                }
+            }
+            OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.Back) }) { Text("Volver") }
         }
-        when (screen.selectedTab) {
-            SQLiteTableTab.STRUCTURE -> { Text("Estructura de ${table.name}", style = MaterialTheme.typography.titleMedium); Text(table.createSql ?: "CREATE TABLE no disponible"); table.columns.forEach { c -> Text("cid=${c.cid} · nombre=${c.name} · tipo=${c.declaredType.ifBlank { "(sin tipo)" }} · notNull=${c.notNull} · default=${c.defaultValue ?: "NULL"} · pk=${c.primaryKeyPosition} · hidden/generated=${c.hidden}") }; Text("Claves e índices"); if (table.indexes.isEmpty()) Text("Sin índices") else table.indexes.forEach { Text("${it.name} · unique=${it.unique} · origin=${it.origin ?: "—"} · partial=${it.partial} · ${it.columns.joinToString()}") }; FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("CREATE TABLE ${table.name}", table.createSql.orEmpty())) }) { Text("Copiar CREATE TABLE") }; OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.ExportSchema(table.name)) }) { Text("Exportar esquema JSON") } } }
-            SQLiteTableTab.INDEXES -> { Text("Índices de ${table.name}", style = MaterialTheme.typography.titleMedium); if (table.indexes.isEmpty()) Text("Sin índices") else table.indexes.forEach { Text("${it.name} · unique=${it.unique} · ${it.columns.joinToString()}") } }
-            SQLiteTableTab.DATA -> SQLiteTableData(state, viewModel, table)
+    }
+
+    @Composable private fun SQLiteStructureContent(table: SQLiteTableSummary, viewModel: SQLiteViewerViewModel, modifier: Modifier = Modifier) {
+        LazyColumn(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Text("Estructura de ${table.name}", style = MaterialTheme.typography.titleMedium) }
+            item { Text(table.createSql ?: "CREATE TABLE no disponible") }
+            items(items = table.columns, key = { it.cid }) { c -> Text("cid=${c.cid} · nombre=${c.name} · tipo=${c.declaredType.ifBlank { "(sin tipo)" }} · notNull=${c.notNull} · default=${c.defaultValue ?: "NULL"} · pk=${c.primaryKeyPosition} · hidden/generated=${c.hidden}") }
+            item { Text("Claves e índices") }
+            if (table.indexes.isEmpty()) item { Text("Sin índices") } else items(items = table.indexes, key = { it.name }) { Text("${it.name} · unique=${it.unique} · origin=${it.origin ?: "—"} · partial=${it.partial} · ${it.columns.joinToString()}") }
+            item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("CREATE TABLE ${table.name}", table.createSql.orEmpty())) }) { Text("Copiar CREATE TABLE") }; OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.ExportSchema(table.name)) }) { Text("Exportar esquema JSON") } } }
         }
-        OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.Back) }) { Text("Volver") }
+    }
+
+    @Composable private fun SQLiteIndexesContent(table: SQLiteTableSummary, modifier: Modifier = Modifier) {
+        LazyColumn(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Text("Índices de ${table.name}", style = MaterialTheme.typography.titleMedium) }
+            if (table.indexes.isEmpty()) item { Text("Sin índices") } else items(items = table.indexes, key = { it.name }) { Text("${it.name} · unique=${it.unique} · ${it.columns.joinToString()}") }
+        }
     }
 
     @Composable
-    private fun SQLiteTableData(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, table: SQLiteTableSummary) {
-        if (state.loading) Text("Cargando filas…")
-        state.error?.let { Text("${it.code}: ${it.message}") }
-        val p = state.page
-        if (p != null) {
-            val totalPages = maxOf(1, ((p.totalRows + p.limit - 1) / p.limit).toInt())
-            Text("Datos · Página ${(p.offset / p.limit) + 1} de $totalPages")
-            val first = if (p.rows.isEmpty()) 0 else p.offset + 1
-            val last = p.offset + p.rows.size
-            Text("Filas $first–$last de ${p.totalRows}")
-            Row(Modifier.horizontalScroll(rememberScrollState())) { Column { Row { Text("#", Modifier.width(64.dp)); p.columns.forEach { Text(it, Modifier.width(160.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) } }; p.rows.forEach { row -> Row(Modifier.clickable { viewModel.onAction(SQLiteAction.OpenRow(row)) }) { Text((row.rowNumber + 1).toString(), Modifier.width(64.dp)); row.cells.forEach { cell -> Text(sqliteCellLabel(cell), Modifier.width(160.dp), maxLines = 2, overflow = TextOverflow.Ellipsis) } } } } }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = p.hasPrevious, onClick = { viewModel.onAction(SQLiteAction.PreviousPage) }) { Text("Anterior") }
-                var sizeMenu by remember { mutableStateOf(false) }
-                Box { OutlinedButton(onClick = { sizeMenu = true }) { Text("Filas por página: ${state.pageSize}") }; DropdownMenu(expanded = sizeMenu, onDismissRequest = { sizeMenu = false }) { listOf(25, 50, 100, 250, 500).forEach { size -> DropdownMenuItem(text = { Text(size.toString()) }, onClick = { sizeMenu = false; viewModel.onAction(SQLiteAction.ChangePageSize(size)) }) } } }
-                Button(enabled = p.hasNext, onClick = { viewModel.onAction(SQLiteAction.NextPage) }) { Text("Siguiente") }
-                OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.ExportPageCsv(table.name)) }) { Text("Exportar página CSV") }
+    private fun SQLiteTableData(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, table: SQLiteTableSummary, modifier: Modifier = Modifier) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.loading) Text("Cargando filas…")
+            state.error?.let { Text("${it.code}: ${it.message}") }
+            val p = state.page
+            if (p != null) {
+                val totalPages = maxOf(1, ((p.totalRows + p.limit - 1) / p.limit).toInt())
+                Text("Datos · Página ${(p.offset / p.limit) + 1} de $totalPages")
+                val first = if (p.rows.isEmpty()) 0 else p.offset + 1
+                val last = p.offset + p.rows.size
+                Text("Filas $first–$last de ${p.totalRows}")
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    LazyColumn(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
+                        item(key = "header") { SQLiteHeaderRow(p.columns) }
+                        items(items = p.rows, key = { row -> "${p.tableName}:${row.rowNumber}" }) { row -> SQLiteDataRow(row, viewModel) }
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(enabled = p.hasPrevious, onClick = { viewModel.onAction(SQLiteAction.PreviousPage) }) { Text("Anterior") }
+                    var sizeMenu by remember { mutableStateOf(false) }
+                    Box { OutlinedButton(onClick = { sizeMenu = true }) { Text("Filas por página: ${state.pageSize}") }; DropdownMenu(expanded = sizeMenu, onDismissRequest = { sizeMenu = false }) { listOf(25, 50, 100, 250, 500).forEach { size -> DropdownMenuItem(text = { Text(size.toString()) }, onClick = { sizeMenu = false; viewModel.onAction(SQLiteAction.ChangePageSize(size)) }) } } }
+                    Button(enabled = p.hasNext, onClick = { viewModel.onAction(SQLiteAction.NextPage) }) { Text("Siguiente") }
+                    OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.ExportPageCsv(table.name)) }) { Text("Exportar página CSV") }
+                }
             }
         }
     }
 
+    @Composable private fun SQLiteHeaderRow(columns: List<String>) { Row { Text("#", Modifier.width(64.dp)); columns.forEach { Text(it, Modifier.width(160.dp), maxLines = 1, overflow = TextOverflow.Ellipsis) } } }
+    @Composable private fun SQLiteDataRow(row: SQLiteRowData, viewModel: SQLiteViewerViewModel) { Row(Modifier.clickable { viewModel.onAction(SQLiteAction.OpenRow(row)) }) { Text((row.rowNumber + 1).toString(), Modifier.width(64.dp)); row.cells.forEach { cell -> Text(sqliteCellLabel(cell), Modifier.width(160.dp), maxLines = 2, overflow = TextOverflow.Ellipsis) } } }
+
     @Composable
-    private fun SQLiteRowDetailScreen(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, screen: SQLiteScreen.RowDetail) {
+    private fun SQLiteRowDetailScreen(state: SQLiteViewerState, viewModel: SQLiteViewerViewModel, screen: SQLiteScreen.RowDetail, modifier: Modifier = Modifier) {
         val columns = state.page?.columns ?: state.selectedTable?.columns?.map { it.name }.orEmpty()
         val types = state.selectedTable?.columns.orEmpty().associateBy { it.name }
-        Text("Fila ${screen.rowNumber + 1}", style = MaterialTheme.typography.titleLarge)
-        Text("Tabla: ${screen.tableName}")
-        screen.row.cells.forEachIndexed { index, cell -> val name = columns.getOrElse(index) { "columna_$index" }; Text(name, style = MaterialTheme.typography.titleMedium); Text("Tipo: ${types[name]?.declaredType?.ifBlank { "(sin tipo)" } ?: "desconocido"}"); androidx.compose.foundation.text.selection.SelectionContainer { Text("Valor:\n${sqliteCellLabel(cell)}") } }
-        OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.Back) }) { Text("Volver") }
+        LazyColumn(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { Text("Fila ${screen.rowNumber + 1}", style = MaterialTheme.typography.titleLarge) }
+            item { Text("Tabla: ${screen.tableName}") }
+            items(screen.row.cells.size) { index -> val cell = screen.row.cells[index]; val name = columns.getOrElse(index) { "columna_$index" }; Text(name, style = MaterialTheme.typography.titleMedium); Text("Tipo: ${types[name]?.declaredType?.ifBlank { "(sin tipo)" } ?: "desconocido"}"); androidx.compose.foundation.text.selection.SelectionContainer { Text("Valor:\n${sqliteCellLabel(cell)}") } }
+            item { OutlinedButton(onClick = { viewModel.onAction(SQLiteAction.Back) }) { Text("Volver") } }
+        }
     }
 
     private fun sqliteCellLabel(cell: SQLiteCellData): String = when (cell) {

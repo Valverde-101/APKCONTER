@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.OutputStream
@@ -58,6 +59,8 @@ sealed interface SQLiteExportRequest { val tableName: String; val mimeType: Stri
 }
 
 class SQLiteViewerViewModel(private val repository: SQLiteRepositoryApi, database: SQLiteDatabaseData, private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)) {
+    private val initialSnapshotId = database.snapshotId
+    private var disposed = false
     private val _state = MutableStateFlow(SQLiteViewerState(database = database, screen = SQLiteScreen.Overview(database.snapshotId)))
     val state: StateFlow<SQLiteViewerState> = _state.asStateFlow()
 
@@ -93,6 +96,12 @@ class SQLiteViewerViewModel(private val repository: SQLiteRepositoryApi, databas
     private fun pageNumber() = ((_state.value.page?.offset ?: 0) / _state.value.pageSize) + 1
     private fun suggestedName(table: String, suffix: String) = "${_state.value.database?.virtualPath?.substringAfterLast('/')?.substringBeforeLast('.') ?: "database"}-$table-$suffix"
     fun closeSnapshotWhenViewerEnds(snapshotId: String) { scope.launch { repository.closeSnapshot(snapshotId) } }
+    fun dispose() {
+        if (disposed) return
+        disposed = true
+        val snapshot = initialSnapshotId.ifBlank { snapshotId() }
+        if (snapshot.isNotBlank()) scope.launch { runCatching { repository.closeSnapshot(snapshot) }; scope.cancel() } else scope.cancel()
+    }
 
     fun schemaJson(tableName: String): String {
         val db = _state.value.database ?: error("No database")
