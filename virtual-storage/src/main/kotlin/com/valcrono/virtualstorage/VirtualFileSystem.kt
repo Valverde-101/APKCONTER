@@ -1,13 +1,7 @@
 package com.valcrono.virtualstorage
 
-import java.io.ByteArrayInputStream
 import java.io.File
-import java.io.InputStream
-import java.security.MessageDigest
-import java.nio.charset.Charset
 import java.time.Instant
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 enum class VirtualFsRole { ADMIN, APP, VIRTUAL_SU }
 enum class VirtualFsPermission { READ_SHARED_STORAGE, WRITE_SHARED_STORAGE }
@@ -105,30 +99,8 @@ class VirtualFsResolver(private val namespace: VirtualFsNamespace) {
     private fun fileNode(p:String,f:File,pkg:String?,readOnly:Boolean=false,owner:String=pkg ?: "system") = VirtualFsNode(f.name.ifBlank{p.substringAfterLast('/')}, p, when { f.isDirectory -> VirtualFsNodeType.DIRECTORY; f.isFile -> VirtualFsNodeType.FILE; else -> VirtualFsNodeType.MISSING }, f.takeIf{it.isFile}?.length() ?: 0, f.lastModified(), if (readOnly) "r--" else "rw-", owner, pkg, f, readOnly)
 }
 
-data class VirtualFsStat(val virtualPath: String, val name: String, val type: VirtualFsNodeType, val size: Long, val modifiedAt: Long, val permissions: String, val owner: String, val packageName: String?, val readOnly: Boolean)
-
-class VirtualFileSystem(private val namespace: VirtualFsNamespace, private val resolver: VirtualFsResolver = VirtualFsResolver(namespace), private val policy: VirtualFsPermissionPolicy = VirtualFsPermissionPolicy(), private val accessLogger: ((VirtualFsAccessContext, String, String, Boolean) -> Unit)? = null) {
+class VirtualFileSystem(private val namespace: VirtualFsNamespace, private val resolver: VirtualFsResolver = VirtualFsResolver(namespace), private val policy: VirtualFsPermissionPolicy = VirtualFsPermissionPolicy()) {
     fun resolve(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin()): VirtualFsNode { val r=resolver.resolve(path, context.virtualUserId).node; require(policy.canRead(context,r)) { "DENIED ${context.role} ${r.virtualPath}" }; return r }
-    private fun logAccess(context: VirtualFsAccessContext, path: String, operation: String, allowed: Boolean) { accessLogger?.invoke(context, path, operation, allowed) }
-    fun stat(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin()): VirtualFsStat {
-        val node = resolve(path, context); logAccess(context, node.virtualPath, "READ", true)
-        return VirtualFsStat(node.virtualPath, node.name, node.type, node.size, node.modifiedAt, node.permissions, node.owner, node.packageName, node.readOnly)
-    }
-    suspend fun openInputStream(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin()): InputStream = withContext(Dispatchers.IO) {
-        val node = resolve(path, context); require(node.type == VirtualFsNodeType.FILE || node.type == VirtualFsNodeType.GENERATED) { "Not a readable file: ${node.virtualPath}" }; logAccess(context, node.virtualPath, "READ", true)
-        node.generatedContent?.byteInputStream() ?: node.physicalFile?.inputStream() ?: ByteArrayInputStream(ByteArray(0))
-    }
-    suspend fun readBytes(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin(), maxBytes: Long): ByteArray = withContext(Dispatchers.IO) {
-        require(maxBytes in 0..64L * 1024L * 1024L) { "Invalid read limit" }; openInputStream(path, context).use { it.readNBytes(maxBytes.toInt()) }
-    }
-    suspend fun readText(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin(), charset: Charset = Charsets.UTF_8, maxBytes: Long): String = withContext(Dispatchers.IO) { String(readBytes(path, context, maxBytes), charset) }
-    suspend fun readRange(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin(), offset: Long, length: Int): ByteArray = withContext(Dispatchers.IO) {
-        require(offset >= 0 && length >= 0 && length <= 4 * 1024 * 1024) { "Invalid range" }; openInputStream(path, context).use { it.skip(offset); it.readNBytes(length) }
-    }
-    suspend fun calculateSha256(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin()): String = withContext(Dispatchers.IO) {
-        val node = resolve(path, context); logAccess(context, node.virtualPath, "HASH", true); val md=MessageDigest.getInstance("SHA-256"); openInputStream(path, context).use { input -> val buf=ByteArray(8192); while(true){ val n=input.read(buf); if(n<0) break; md.update(buf,0,n)} }; md.digest().joinToString("") { "%02x".format(it) }
-    }
-
     fun list(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin()): List<VirtualFsNode> {
         val node = resolve(path, context); val p=node.virtualPath
         if (p == "/") return listOf(
