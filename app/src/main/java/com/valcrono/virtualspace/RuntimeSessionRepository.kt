@@ -9,7 +9,7 @@ import java.util.UUID
 private const val TOKEN_TTL_MS = 5 * 60 * 1000L
 const val START_TIMEOUT_MS: Long = 30_000L
 
-data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean, val slotId: RuntimeSlotId?)
+data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean)
 
 class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
@@ -20,7 +20,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         val attemptId = if (before?.state == "STARTING" && before.currentLaunchAttemptId != null) before.currentLaunchAttemptId else UUID.randomUUID().toString()
         val token = UUID.randomUUID().toString()
         logLaunch("SESSION_PREPARE", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, "STARTING")
-        if (before?.state in setOf("ACTIVE", "ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND")) return@withTransaction PreparedLaunch(sessionId, before.currentLaunchAttemptId.orEmpty(), token, false, db.runtimeSlots().findBySession(sessionId)?.let { RuntimeSlotId.valueOf(it.slotId) })
+        if (before?.state == "ACTIVE") return@withTransaction PreparedLaunch(sessionId, before.currentLaunchAttemptId.orEmpty(), token, false)
         val row = (before ?: VirtualRuntimeSessionEntity(sessionId, pkg.packageName, pkg.virtualUserId, "STOPPED", null, now, null, now, now, null, Process.myPid(), activity, "PENDING", "NEW", null, null)).copy(
             state = "STARTING",
             currentLaunchAttemptId = attemptId,
@@ -36,14 +36,13 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
             sanitizedError = null,
         )
         db.runtime().upsert(row)
-        val reservedSlot = RuntimeSlotRepository(db).reserve(pkg.packageName, pkg.virtualUserId, sessionId, attemptId, now) ?: error("No hay procesos virtuales libres.")
         logLaunch("SESSION_STARTING_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, row.state)
         db.launchTokens().upsert(VirtualLaunchTokenEntity(token, sessionId, attemptId, pkg.virtualUserId, pkg.packageName, activity, now, now + TOKEN_TTL_MS, null))
         logLaunch("TOKEN_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, null, null)
-        PreparedLaunch(sessionId, attemptId, token, true, reservedSlot.slotId)
+        PreparedLaunch(sessionId, attemptId, token, true)
     }
 
-    suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) { RuntimeRecoveryManager(db).recover(now) }
+    suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) { db.runtime().markStaleStarting(now); db.runtime().markProcessLost(now) }
 }
 
 data class WatchdogDiagnostics(val active: Boolean = false, val lastTickAt: Long = 0, val startingFound: Int = 0, val deadline: Long = 0, val lastHeartbeatAgeMs: Long? = null, val dbInstanceId: String = "unknown", val internalError: String? = null)
