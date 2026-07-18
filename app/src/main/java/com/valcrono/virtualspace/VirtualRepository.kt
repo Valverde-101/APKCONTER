@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -109,5 +109,17 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
         db.execSQL("DROP TABLE virtual_launch_tokens")
         db.execSQL("ALTER TABLE virtual_launch_tokens_new RENAME TO virtual_launch_tokens")
         db.execSQL("UPDATE virtual_runtime_sessions SET state='ERROR', launchPhase='MIGRATED_STALE', errorCode='ERROR_STALE_STARTING', sanitizedError='Inicio anterior limpiado al actualizar VirtualSpace.' WHERE state='STARTING'")
+    }
+}
+
+
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS runtime_slots (slotId TEXT NOT NULL, processName TEXT NOT NULL, state TEXT NOT NULL, packageName TEXT, virtualUserId INTEGER, sessionId TEXT, launchAttemptId TEXT, hostPid INTEGER, assignedAt INTEGER, startedAt INTEGER, lastHeartbeatAt INTEGER, stoppedAt INTEGER, pssBytes INTEGER, errorCode TEXT, errorMessage TEXT, PRIMARY KEY(slotId))")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_runtime_slots_sessionId ON runtime_slots(sessionId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_runtime_slots_packageName_virtualUserId ON runtime_slots(packageName, virtualUserId)")
+        db.execSQL("INSERT OR IGNORE INTO runtime_slots (slotId, processName, state, packageName, virtualUserId, sessionId, launchAttemptId, hostPid, assignedAt, startedAt, lastHeartbeatAt, stoppedAt, pssBytes, errorCode, errorMessage) VALUES ('VAPP0', ':vapp0', 'FREE', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)")
+        db.execSQL("INSERT OR IGNORE INTO runtime_slots (slotId, processName, state, packageName, virtualUserId, sessionId, launchAttemptId, hostPid, assignedAt, startedAt, lastHeartbeatAt, stoppedAt, pssBytes, errorCode, errorMessage) VALUES ('VAPP1', ':vapp1', 'FREE', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)")
+        db.execSQL("UPDATE virtual_runtime_sessions SET state='STOPPED', launchPhase='MIGRATED_MULTIPROCESS' WHERE state IN ('ACTIVE','PAUSED','STARTING')")
     }
 }
