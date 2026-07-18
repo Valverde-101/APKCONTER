@@ -14,7 +14,7 @@ data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, va
 class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
 
-    suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, now: Long = System.currentTimeMillis()): PreparedLaunch = db.withTransaction {
+    suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, maxActiveApps: Int = 2, now: Long = System.currentTimeMillis()): PreparedLaunch = db.withTransaction {
         val before = db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)
         val sessionId = before?.sessionId ?: UUID.randomUUID().toString()
         val existingStartingAttemptId = before?.takeIf { it.state == "STARTING" }?.currentLaunchAttemptId
@@ -46,7 +46,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
             sanitizedError = null,
         )
         db.runtime().upsert(row)
-        val reservedSlot = RuntimeSlotRepository(db).reserve(pkg.packageName, pkg.virtualUserId, sessionId, attemptId, now) ?: error("No hay procesos virtuales libres.")
+        val reservedSlot = RuntimeSlotRepository(db, maxActiveApps).reserve(pkg.packageName, pkg.virtualUserId, sessionId, attemptId, now) ?: error("No hay procesos virtuales libres.")
         logLaunch("SESSION_STARTING_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, row.state)
         db.launchTokens().upsert(VirtualLaunchTokenEntity(token, sessionId, attemptId, pkg.virtualUserId, pkg.packageName, activity, now, now + TOKEN_TTL_MS, null))
         logLaunch("TOKEN_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, null, null)
@@ -60,9 +60,9 @@ data class WatchdogDiagnostics(val active: Boolean = false, val lastTickAt: Long
 
 class RuntimeSessionController(private val repository: RuntimeSessionRepository, private val db: ValcronoDatabase, private val metrics: RuntimeMetricsRepository) {
     @Volatile var diagnostics: WatchdogDiagnostics = WatchdogDiagnostics(dbInstanceId = System.identityHashCode(db).toString(16)); private set
-    suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String): PreparedLaunch = repository.prepareLaunch(pkg, activity)
-    suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { it.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(it.sessionId, a, "STOPPED", "STOPPED", System.currentTimeMillis(), null, null) }; metrics.removeMetrics(it.sessionId) } }
-    suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", System.currentTimeMillis(), "LAUNCH_CANCELLED", "Inicio cancelado por el usuario.") ; metrics.removeMetrics(sessionId) } }
+    suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, maxActiveApps: Int = 2): PreparedLaunch = repository.prepareLaunch(pkg, activity, maxActiveApps)
+    suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { row -> val now = System.currentTimeMillis(); row.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(row.sessionId, a, "STOPPED", "STOPPED", now, null, null); db.launchTokens().revokeAttempt(row.sessionId, a, now) }; db.runtimeSlots().findBySession(row.sessionId)?.let { db.runtimeSlots().release(it.slotId, now) }; metrics.removeMetrics(row.sessionId) } }
+    suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { val now = System.currentTimeMillis(); db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", now, "LAUNCH_CANCELLED", "Inicio cancelado por el usuario."); db.launchTokens().revokeAttempt(sessionId, it, now); db.runtimeSlots().findBySession(sessionId)?.let { slot -> db.runtimeSlots().release(slot.slotId, now) }; metrics.removeMetrics(sessionId) } }
     suspend fun watchdogTick(timeoutMs: Long = START_TIMEOUT_MS) {
         val now = System.currentTimeMillis(); val deadline = now - timeoutMs
         val stale = db.runtime().staleStarting(deadline)
@@ -72,7 +72,7 @@ class RuntimeSessionController(private val repository: RuntimeSessionRepository,
             val attempt = row.currentLaunchAttemptId ?: return@forEach
             logLaunch("WATCHDOG_CHECK", row.sessionId, attempt, null, row.packageName, row.virtualUserId, row.state, row.state)
             val changed = db.runtime().timeoutLaunch(row.sessionId, attempt, deadline, now)
-            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); metrics.removeMetrics(row.sessionId) }
+            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); db.runtimeSlots().findBySession(row.sessionId)?.let { db.runtimeSlots().release(it.slotId, now) }; metrics.removeMetrics(row.sessionId) }
         }
         db.launchTokens().cleanup(now, now - 24 * 60 * 60 * 1000L)
     }

@@ -100,6 +100,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -413,7 +415,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Estado: ${sessionStateLabel(state)}")
-                    Text(if (state == SessionState.ACTIVE) "RAM del host compartida: ${formatBytes(snapshot.hostPssBytes)}" else "RAM actual: 0 MB · Sin proceso activo")
+                    Text(runtimeSlotLabel(session))
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -422,7 +424,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                             onClick = { openVirtual(pkg) },
                             enabled = state != SessionState.STARTING && pkg.enabled && !pkg.damaged,
                             modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                        ) { Text(if (state == SessionState.ACTIVE) "Volver" else "Abrir") }
+                        ) { Text(launchButtonLabel(session?.state ?: "STOPPED")) }
                     } else {
                         Text("APK disponible para inspección; runtime no compatible.")
                         Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
@@ -482,8 +484,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             }
             item { SettingsSection("Aplicaciones virtuales") {
                 Text("Máximo de apps activas")
-                Slider(value = settings.maxActiveApps.toFloat(), onValueChange = { scope.launch { settingsStore.setMaxActiveApps(it.toInt()) } }, valueRange = 1f..3f, steps = 1)
-                Text("${settings.maxActiveApps} app activa")
+                Slider(value = settings.maxActiveApps.toFloat(), onValueChange = { scope.launch { settingsStore.setMaxActiveApps(it.toInt()) } }, valueRange = 1f..2f, steps = 0)
+                Text("${settings.maxActiveApps} app${if (settings.maxActiveApps == 1) "" else "s"} activa${if (settings.maxActiveApps == 1) "" else "s"}")
                 Text("Qué hacer al abrir otra app")
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Preguntar" to com.valcrono.core.OpenAnotherAppPolicy.ASK, "Pausar actual" to com.valcrono.core.OpenAnotherAppPolicy.PAUSE_CURRENT, "Detener actual" to com.valcrono.core.OpenAnotherAppPolicy.STOP_CURRENT, "Impedir apertura" to com.valcrono.core.OpenAnotherAppPolicy.BLOCK).forEach { (label, policy) -> FilterChip(selected = settings.openAnotherAppPolicy == policy, onClick = { scope.launch { settingsStore.setOpenAnotherAppPolicy(policy) } }, label = { Text(label) }) } }
             } }
@@ -619,7 +621,32 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { runMemoryCleanup(settings) }) { Text("Ejecutar limpieza") }
                 }
             }
+            items(runBlocking { repository.db.runtimeSlots().getAll() }) { slot -> SlotDiagnosticCard(slot) }
             items(sessions) { session -> SessionCard(session, packages.firstOrNull { it.packageName == session.packageName }?.label ?: session.packageName, packages) }
+        }
+    }
+
+    @Composable
+    private fun SlotDiagnosticCard(slot: RuntimeSlotEntity) {
+        val now = System.currentTimeMillis()
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(slot.slotId, style = MaterialTheme.typography.titleMedium)
+                Text("processName: ${slot.processName}")
+                Text("PID: ${slot.hostPid ?: "—"}")
+                Text("packageName: ${slot.packageName ?: "—"}")
+                Text("sessionId: ${slot.sessionId?.take(8) ?: "—"}")
+                Text("launchAttemptId: ${slot.launchAttemptId?.take(8) ?: "—"}")
+                Text("estado: ${slot.state}")
+                Text("último heartbeat: ${slot.lastHeartbeatAt?.let(::date) ?: "—"} · antigüedad: ${slot.lastHeartbeatAt?.let { formatDuration(now - it) } ?: "—"}")
+                Text("PSS: ${formatBytes(slot.pssBytes ?: 0)}")
+                Text("Activity adjunta: ${if (slot.state == "ACTIVE_FOREGROUND") "sí" else "no"}")
+                Text("Service conectado: ${if (slot.hostPid != null && slot.state !in setOf("FREE", "STOPPED")) "sí" else "no"}")
+                Text("ClassLoader cargado: ${if (slot.state in setOf("ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND", "PAUSED_BY_USER")) "sí" else "no"}")
+                Text("última fase: ${slot.state}")
+                Text("errorCode: ${slot.errorCode ?: "—"}")
+                Text("errorMessage: ${slot.errorMessage ?: "—"}")
+            }
         }
     }
 
@@ -1086,13 +1113,44 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
     }
 
+    private fun launchButtonLabel(state: String): String = when (state) {
+        "STARTING" -> "Abriendo…"
+        "ACTIVE", "ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND" -> "Volver a la app"
+        "PAUSED", "PAUSED_BY_USER" -> "Reanudar"
+        "ERROR", "CRASHED" -> "Reintentar"
+        else -> "Abrir"
+    }
+
+    private fun runtimeSlotLabel(session: VirtualRuntimeSessionEntity?): String {
+        val slot = session?.sessionId?.let { runBlocking { repository.db.runtimeSlots().findBySession(it) } }
+        return if (slot != null) "Slot: ${slot.slotId} · PID: ${slot.hostPid ?: "—"} · PSS: ${formatBytes(slot.pssBytes ?: 0)}" else "RAM actual: 0 MB · Sin proceso activo"
+    }
+
+    private fun bringRuntimeToForeground(pkg: VirtualPackageEntity, prepared: PreparedLaunch, activity: String) {
+        val slot = prepared.slotId ?: runBlocking { repository.db.runtimeSlots().findBySession(prepared.sessionId)?.let { RuntimeSlotId.valueOf(it.slotId) } }
+        if (slot == null) { importStatus = "PROCESS_LOST: no se encontró slot para ${pkg.label}"; return }
+        startActivity(
+            Intent(this@MainActivity, proxyActivityFor(slot))
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra("virtualUserId", pkg.virtualUserId)
+                .putExtra("virtualPackageName", pkg.packageName)
+                .putExtra("virtualActivityName", activity)
+                .putExtra("sessionId", prepared.sessionId)
+                .putExtra("launchAttemptId", prepared.launchAttemptId)
+                .putExtra("launchToken", prepared.launchToken)
+                .putExtra("slotId", slot.name),
+        )
+        importStatus = "Volviendo a ${pkg.label}"
+    }
+
     private fun launchVirtual(pkg: VirtualPackageEntity) {
         val activity = pkg.entryPointClass ?: run { importStatus = "No ejecutable: entry point no declarado"; return }
         if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
-            val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity) }
-            if (!prepared.shouldStartActivity) { importStatus = "Sesión existente reutilizada: ${pkg.label}"; return@launch }
+            val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity, settingsStore.settings.first().maxActiveApps) }
+            if (!prepared.shouldStartActivity) { bringRuntimeToForeground(pkg, prepared, activity); return@launch }
             logLaunch("INTENT_SENT", prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, pkg.packageName, pkg.virtualUserId, "STARTING", "STARTING")
+            startService(Intent(this@MainActivity, serviceFor(prepared.slotId ?: RuntimeSlotId.VAPP0)).putExtra("runtimeLaunchRequest", RuntimeLaunchRequest(pkg.virtualUserId, pkg.packageName, activity, prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name)))
             startActivity(
                 Intent(this@MainActivity, proxyActivityFor(prepared.slotId ?: RuntimeSlotId.VAPP0))
                     .putExtra("virtualUserId", pkg.virtualUserId)
