@@ -123,7 +123,22 @@ class VirtualFileSystem(private val namespace: VirtualFsNamespace, private val r
     }
     suspend fun readText(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin(), charset: Charset = Charsets.UTF_8, maxBytes: Long): String = withContext(Dispatchers.IO) { String(readBytes(path, context, maxBytes), charset) }
     suspend fun readRange(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin(), offset: Long, length: Int): ByteArray = withContext(Dispatchers.IO) {
-        require(offset >= 0 && length >= 0 && length <= 4 * 1024 * 1024) { "Invalid range" }; openInputStream(path, context).use { it.skip(offset); it.readNBytes(length) }
+        require(offset >= 0 && length >= 0 && length <= 4 * 1024 * 1024) { "Invalid range" }
+        require(Long.MAX_VALUE - offset >= length.toLong()) { "Invalid range overflow" }
+        val before = stat(path, context)
+        require(before.type == VirtualFsNodeType.FILE || before.type == VirtualFsNodeType.GENERATED) { "Not a readable file: ${before.virtualPath}" }
+        openInputStream(path, context).use { input ->
+            var remaining = offset
+            while (remaining > 0) {
+                val skipped = input.skip(remaining)
+                if (skipped <= 0) return@use ByteArray(0)
+                remaining -= skipped
+            }
+            val bytes = input.readNBytes(length)
+            val after = stat(path, context)
+            require(before.modifiedAt == after.modifiedAt && before.size == after.size) { "FILE_CHANGED_DURING_READ" }
+            bytes
+        }
     }
     suspend fun calculateSha256(path: String, context: VirtualFsAccessContext = VirtualFsAccessContext.admin()): String = withContext(Dispatchers.IO) {
         val node = resolve(path, context); logAccess(context, node.virtualPath, "HASH", true); val md=MessageDigest.getInstance("SHA-256"); openInputStream(path, context).use { input -> val buf=ByteArray(8192); while(true){ val n=input.read(buf); if(n<0) break; md.update(buf,0,n)} }; md.digest().joinToString("") { "%02x".format(it) }
