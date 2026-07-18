@@ -57,7 +57,5 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
-            <service android:name=".RuntimeSlot0Service" android:process=":vapp0" android:exported="false" />
-        <service android:name=".RuntimeSlot1Service" android:process=":vapp1" android:exported="false" />
     </application>
 </manifest>
