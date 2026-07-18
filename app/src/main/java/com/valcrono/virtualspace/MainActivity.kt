@@ -697,26 +697,12 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
     }
 
-    private fun routeFileNode(vfs: com.valcrono.virtualstorage.VirtualFileSystem, node: com.valcrono.virtualstorage.VirtualFsNode): FileDestination {
-        val target = if (node.type == com.valcrono.virtualstorage.VirtualFsNodeType.ALIAS) node.virtualPath else node.virtualPath
-        val resolved = runCatching { vfs.resolve(target, vfsAdminContext) }.getOrDefault(node)
-        if (resolved.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) return FileDestination.Browser(target)
-        val name = target.lowercase(Locale.US)
-        return when {
-            name.endsWith(".txt") || name.endsWith(".log") || name.endsWith(".properties") || name.endsWith(".ini") || name.endsWith(".conf") || name.endsWith(".csv") || name.endsWith(".md") -> FileDestination.TextViewer(target)
-            name.endsWith(".json") -> FileDestination.JsonViewer(target)
-            name.endsWith(".xml") -> FileDestination.XmlViewer(target)
-            name.endsWith(".db-journal") || name.endsWith(".db-wal") || name.endsWith(".db-shm") -> FileDestination.HexViewer(target)
-            name.endsWith(".db") || name.endsWith(".sqlite") || name.endsWith(".sqlite3") -> FileDestination.SQLiteViewer(target)
-            name.endsWith(".apk") -> FileDestination.ApkViewer(target)
-            name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp") -> FileDestination.ImageViewer(target)
-            else -> FileDestination.HexViewer(target)
-        }
-    }
-
     @Composable
     private fun GlobalFileExplorer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, currentPath: String, settings: VirtualSpaceSettings) {
         val path = currentPath.ifBlank { "/" }
+        val scope = rememberCoroutineScope()
+        val router = remember(vfs) { FileDestinationRouter(vfs) }
+        fun openPath(target: String) { scope.launch { when (val result = router.route(target, vfsAdminContext)) { is FileRouteResult.Navigate -> fileDestination = result.destination; is FileRouteResult.Error -> importStatus = "${result.code}: ${result.message}" } } }
         val node = runCatching { vfs.resolve(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrNull()
         val children = runCatching { vfs.list(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrDefault(emptyList())
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
@@ -726,7 +712,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     navigationIcon = { IconButton(onClick = { fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }) { Text("←") } },
                     actions = { IconButton(onClick = { importStatus = "Búsqueda preparada para $path" }) { Text("🔍") }; IconButton(onClick = {}) { Text("▦") }; IconButton(onClick = {}) { Text("⋮") } },
                 )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema", "Apps", "Compartido", "APKs", "Procesos").forEach { FilterChip(selected = false, onClick = {}, label = { Text(it) }) } }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { mapOf("Sistema" to "/", "Apps" to "/data/data", "Compartido" to "/storage/emulated/0/Shared", "APKs" to "/data/app", "Procesos" to "/proc").forEach { (label, target) -> FilterChip(selected = false, onClick = { fileDestination = FileDestination.Browser(target) }, label = { Text(label) }) } }
                 if (path == "/") FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { mapOf("Datos privados" to "/data/data", "Datos externos" to "/storage/emulated/0/Android/data", "Almacenamiento compartido" to "/storage/emulated/0", "APKs instalados" to "/data/app", "Bases de datos" to "/data/data", "Preferencias" to "/data/data", "Caché" to "/data/data", "Procesos" to "/proc").forEach { (label, target) -> Button(onClick = { fileDestination = FileDestination.Browser(target) }) { Text(label) } } }
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { items(listOf("Raíz").plus(path.split('/').filter { it.isNotBlank() })) { crumb -> val parts = path.split('/').filter { it.isNotBlank() }; val index = listOf("Raíz").plus(parts).indexOf(crumb); FilterChip(selected = false, onClick = { fileDestination = FileDestination.Browser(if (index == 0) "/" else "/" + parts.take(index).joinToString("/")) }, label = { Text(crumb, maxLines = 1) }) } }
                 Text("${children.size} elementos")
@@ -737,9 +723,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             items(children) { child ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(8.dp)) {
                     Text("${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "📁" else "📄"} ${child.name}")
-                    Text("Tipo: ${child.type}")
+                    Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.ALIAS && child.virtualPath == "/sdcard") "Acceso a /storage/emulated/0" else "Tipo: ${child.type}")
                     Text("${child.type} · ${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "" else formatBytes(child.size) + " · "}${date(if (child.modifiedAt > 0) child.modifiedAt else System.currentTimeMillis())} · ${child.permissions} · ${child.owner} · ${child.packageName ?: "—"}")
-                    Button(onClick = { fileDestination = routeFileNode(vfs, child) }) { Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "Abrir" else "Ver") }
+                    Button(onClick = { openPath(child.virtualPath) }) { Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY || child.type == com.valcrono.virtualstorage.VirtualFsNodeType.ALIAS) "Abrir" else "Ver") }
                 } }
             }
         }
