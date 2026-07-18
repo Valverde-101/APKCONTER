@@ -45,18 +45,13 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) { db.runtime().markStaleStarting(now); db.runtime().markProcessLost(now) }
 }
 
-data class WatchdogDiagnostics(val active: Boolean = false, val lastTickAt: Long = 0, val startingFound: Int = 0, val deadline: Long = 0, val lastHeartbeatAgeMs: Long? = null, val dbInstanceId: String = "unknown", val internalError: String? = null)
-
 class RuntimeSessionController(private val repository: RuntimeSessionRepository, private val db: ValcronoDatabase, private val metrics: RuntimeMetricsRepository) {
-    @Volatile var diagnostics: WatchdogDiagnostics = WatchdogDiagnostics(dbInstanceId = System.identityHashCode(db).toString(16)); private set
     suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String): PreparedLaunch = repository.prepareLaunch(pkg, activity)
     suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { it.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(it.sessionId, a, "STOPPED", "STOPPED", System.currentTimeMillis(), null, null) }; metrics.removeMetrics(it.sessionId) } }
     suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", System.currentTimeMillis(), "LAUNCH_CANCELLED", "Inicio cancelado por el usuario.") ; metrics.removeMetrics(sessionId) } }
     suspend fun watchdogTick(timeoutMs: Long = START_TIMEOUT_MS) {
         val now = System.currentTimeMillis(); val deadline = now - timeoutMs
         val stale = db.runtime().staleStarting(deadline)
-        diagnostics = WatchdogDiagnostics(true, now, stale.size, deadline, stale.minOfOrNull { now - it.lastHeartbeatAt }, System.identityHashCode(db).toString(16), null)
-        logLaunch("WATCHDOG_TICK", null, null, null, null, null, "deadline=$deadline rows=${stale.size}", "db=${diagnostics.dbInstanceId}")
         stale.forEach { row ->
             val attempt = row.currentLaunchAttemptId ?: return@forEach
             logLaunch("WATCHDOG_CHECK", row.sessionId, attempt, null, row.packageName, row.virtualUserId, row.state, row.state)
