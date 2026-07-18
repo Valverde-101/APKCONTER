@@ -100,17 +100,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-sealed interface FileDestination {
-    data class Browser(val path: String) : FileDestination
-    data class TextViewer(val path: String) : FileDestination
-    data class JsonViewer(val path: String) : FileDestination
-    data class XmlViewer(val path: String) : FileDestination
-    data class SQLiteViewer(val path: String) : FileDestination
-    data class ApkViewer(val path: String) : FileDestination
-    data class ImageViewer(val path: String) : FileDestination
-    data class HexViewer(val path: String) : FileDestination
-}
-
 @OptIn(
     ExperimentalMaterial3Api::class,
     ExperimentalMaterial3WindowSizeClassApi::class,
@@ -141,9 +130,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     private var destination by mutableStateOf(Destination.HOME)
     private var selectedPackage by mutableStateOf<VirtualPackageEntity?>(null)
-    private var fileDestination by mutableStateOf<FileDestination>(FileDestination.Browser("/"))
     private var explorerPath by mutableStateOf("")
-    private val vfsAdminContext = com.valcrono.virtualstorage.VirtualFsAccessContext.admin()
     private var importStatus by mutableStateOf("PROTOTIPO FUNCIONAL PARA APPS COOPERATIVAS")
     private var isImporting by mutableStateOf(false)
     private var pendingLaunchPackage by mutableStateOf<VirtualPackageEntity?>(null)
@@ -212,7 +199,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             lifecycleScope.launch {
                 repeatOnLifecycle(Lifecycle.State.STARTED) {
                     while (true) {
-                        try { withContext(Dispatchers.IO) { runtimeController.watchdogTick() } } catch (t: Throwable) { VLog.e("RuntimeLaunch", "WATCHDOG_INTERNAL_ERROR", t) }
+                        withContext(Dispatchers.IO) { runtimeController.watchdogTick() }
                         delay(1000)
                     }
                 }
@@ -280,7 +267,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         when (destination) {
                             Destination.HOME -> HomeScreen(packages, snapshot, settings, sessions)
                             Destination.APPS -> AppsScreen(packages, sessions)
-                            Destination.FILES -> GlobalFileDestination(packages, settings)
+                            Destination.FILES -> GlobalFileExplorer(packages, settings)
                             Destination.PROCESSES -> ProcessScreen(snapshot, packages, settings, sessions)
                             Destination.SETTINGS -> SettingsScreen(settings, packages)
                             Destination.APP_SETTINGS -> PerAppSettingsScreen(selectedPackage)
@@ -375,7 +362,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         ) { Text(if (state == SessionState.ACTIVE) "Volver" else "Abrir") }
                     } else {
                         Text("APK disponible para inspección; runtime no compatible.")
-                        Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
+                        Button(onClick = { selectedPackage = pkg; explorerPath = "/data/app/${pkg.packageName}/base.apk"; destination = Destination.FILES }) { Text("Inspeccionar") }
                     }
                     when (state) {
                         SessionState.STARTING -> OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar") }
@@ -388,7 +375,6 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         onClick = {
                             selectedPackage = pkg
                             explorerPath = ""
-                            fileDestination = FileDestination.Browser("/data/data/${pkg.packageName}")
                             destination = Destination.FILES
                         },
                         modifier = Modifier.defaultMinSize(minHeight = 48.dp),
@@ -455,7 +441,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             item { SettingsSection("Permisos") { PermissionsScreen() } }
             item { SettingsSection("Copias de seguridad") { SettingSwitch("Incluir APK en exportación", settings.includeApkInExport) { scope.launch { settingsStore.setBool("include_apk_export", it) } }; SettingSwitch("Incluir caché", settings.includeCacheInExport) { scope.launch { settingsStore.setBool("include_cache_export", it) } }; SettingSwitch("Incluir logs", settings.includeLogsInExport) { scope.launch { settingsStore.setBool("include_logs_export", it) } }; SettingSwitch("Verificación SHA-256", settings.backupSha256) { scope.launch { settingsStore.setBool("backup_sha256", it) } }; SettingSwitch("Backup antes de borrar", settings.backupBeforeDelete) { scope.launch { settingsStore.setBool("backup_before_delete", it) } } } }
             item { SettingsSection("Seguridad") { settingsText("Bloqueo mediante PIN: No implementada", "Desbloqueo biométrico: No implementada", "Impedir capturas en pantallas sensibles: ${settings.flagSecureEnabled}", "Registro de acciones administrativas: ${settings.adminActionLog}") } }
-            item { SettingsSection("Diagnóstico") { deviceDiagnostics(packages).forEach { Text("${it.first}: ${it.second}") }; val wd = runtimeController.diagnostics; Text("Watchdog activo: ${if (wd.active) "Sí" else "No"}"); Text("Último tick: ${if (wd.lastTickAt > 0) date(wd.lastTickAt) else "—"}"); Text("Sesiones STARTING encontradas: ${wd.startingFound}"); Text("Deadline actual: ${wd.deadline}"); Text("Edad del último heartbeat: ${wd.lastHeartbeatAgeMs?.let(::formatDuration) ?: "—"}"); Text("DB instance ID: ${wd.dbInstanceId}") } }
+            item { SettingsSection("Diagnóstico") { deviceDiagnostics(packages).forEach { Text("${it.first}: ${it.second}") } } }
             item { SettingsSection("Desarrollador") { SettingSwitch("Modo desarrollador", settings.developerMode) { scope.launch { settingsStore.setDeveloperMode(it) } }; Text("Nivel de logs"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Error", "Información", "Depuración").forEach { level -> FilterChip(selected = settings.logLevel == level, onClick = { scope.launch { settingsStore.setLogLevel(level) } }, label = { Text(level) }) } }; SettingSwitch("Mostrar stack traces", settings.showStackTraces) { scope.launch { settingsStore.setBool("show_stack_traces", it) } } } }
             item { SettingsSection("Acerca de") { settingsText("Nombre: Valcrono VirtualSpace", "Versión: ${BuildConfig.VERSION_NAME}", "Código de versión: ${BuildConfig.VERSION_CODE}", "Commit del build: ${BuildConfig.GIT_COMMIT}", "Fecha de compilación: ${BuildConfig.BUILD_DATE}", "Tipo de build: ${BuildConfig.BUILD_TYPE}", "SDK objetivo: 35", "Estado del runtime: PROTOTIPO FUNCIONAL PARA APPS COOPERATIVAS") } }
             item {
@@ -650,91 +636,35 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
 
     @Composable
-    private fun GlobalFileDestination(packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings) {
+    private fun GlobalFileExplorer(packages: List<VirtualPackageEntity>, settings: VirtualSpaceSettings) {
         val vfs = remember(packages) { com.valcrono.virtualstorage.VirtualFileSystem(com.valcrono.virtualstorage.VirtualFsNamespace(filesDir) { packages.map { it.packageName } }) }
-        when (val dest = fileDestination) {
-            is FileDestination.Browser -> GlobalFileExplorer(vfs, dest.path, settings)
-            is FileDestination.TextViewer -> TextFileViewer(vfs, dest.path)
-            is FileDestination.JsonViewer -> TextFileViewer(vfs, dest.path, "JSON")
-            is FileDestination.XmlViewer -> TextFileViewer(vfs, dest.path, "XML")
-            is FileDestination.SQLiteViewer -> SQLiteViewer(vfs, dest.path)
-            is FileDestination.ApkViewer -> ApkViewer(vfs, dest.path)
-            is FileDestination.ImageViewer -> HexViewer(vfs, dest.path, "Imagen")
-            is FileDestination.HexViewer -> HexViewer(vfs, dest.path, "Hex")
-        }
-    }
-
-    private fun routeFileNode(vfs: com.valcrono.virtualstorage.VirtualFileSystem, node: com.valcrono.virtualstorage.VirtualFsNode): FileDestination {
-        val target = if (node.type == com.valcrono.virtualstorage.VirtualFsNodeType.ALIAS) node.virtualPath else node.virtualPath
-        val resolved = runCatching { vfs.resolve(target, vfsAdminContext) }.getOrDefault(node)
-        if (resolved.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) return FileDestination.Browser(target)
-        val name = target.lowercase(Locale.US)
-        return when {
-            name.endsWith(".txt") || name.endsWith(".log") || name.endsWith(".properties") || name.endsWith(".ini") || name.endsWith(".conf") || name.endsWith(".csv") || name.endsWith(".md") -> FileDestination.TextViewer(target)
-            name.endsWith(".json") -> FileDestination.JsonViewer(target)
-            name.endsWith(".xml") -> FileDestination.XmlViewer(target)
-            name.endsWith(".db-journal") || name.endsWith(".db-wal") || name.endsWith(".db-shm") -> FileDestination.HexViewer(target)
-            name.endsWith(".db") || name.endsWith(".sqlite") || name.endsWith(".sqlite3") -> FileDestination.SQLiteViewer(target)
-            name.endsWith(".apk") -> FileDestination.ApkViewer(target)
-            name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp") -> FileDestination.ImageViewer(target)
-            else -> FileDestination.HexViewer(target)
-        }
-    }
-
-    @Composable
-    private fun GlobalFileExplorer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, currentPath: String, settings: VirtualSpaceSettings) {
-        val path = currentPath.ifBlank { "/" }
+        val path = explorerPath.ifBlank { "/" }
         val node = runCatching { vfs.resolve(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrNull()
         val children = runCatching { vfs.list(path, com.valcrono.virtualstorage.VirtualFsAccessContext.admin()) }.getOrDefault(emptyList())
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
                 TopAppBar(
                     title = { Column { Text("Archivos", maxLines = 1, overflow = TextOverflow.Ellipsis); Text(path, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) } },
-                    navigationIcon = { IconButton(onClick = { fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }) { Text("←") } },
+                    navigationIcon = { IconButton(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("←") } },
                     actions = { IconButton(onClick = { importStatus = "Búsqueda preparada para $path" }) { Text("🔍") }; IconButton(onClick = {}) { Text("▦") }; IconButton(onClick = {}) { Text("⋮") } },
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Sistema", "Apps", "Compartido", "APKs", "Procesos").forEach { FilterChip(selected = false, onClick = {}, label = { Text(it) }) } }
-                if (path == "/") FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { mapOf("Datos privados" to "/data/data", "Datos externos" to "/storage/emulated/0/Android/data", "Almacenamiento compartido" to "/storage/emulated/0", "APKs instalados" to "/data/app", "Bases de datos" to "/data/data", "Preferencias" to "/data/data", "Caché" to "/data/data", "Procesos" to "/proc").forEach { (label, target) -> Button(onClick = { fileDestination = FileDestination.Browser(target) }) { Text(label) } } }
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { items(listOf("Raíz").plus(path.split('/').filter { it.isNotBlank() })) { crumb -> val parts = path.split('/').filter { it.isNotBlank() }; val index = listOf("Raíz").plus(parts).indexOf(crumb); FilterChip(selected = false, onClick = { fileDestination = FileDestination.Browser(if (index == 0) "/" else "/" + parts.take(index).joinToString("/")) }, label = { Text(crumb, maxLines = 1) }) } }
+                if (path == "/") FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { mapOf("Datos privados" to "/data/data", "Datos externos" to "/storage/emulated/0/Android/data", "Almacenamiento compartido" to "/storage/emulated/0", "APKs instalados" to "/data/app", "Bases de datos" to "/data/data", "Preferencias" to "/data/data", "Caché" to "/data/data", "Procesos" to "/proc").forEach { (label, target) -> Button(onClick = { explorerPath = target }) { Text(label) } } }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) { items(listOf("Raíz").plus(path.split('/').filter { it.isNotBlank() })) { crumb -> val parts = path.split('/').filter { it.isNotBlank() }; val index = listOf("Raíz").plus(parts).indexOf(crumb); FilterChip(selected = false, onClick = { explorerPath = if (index == 0) "/" else "/" + parts.take(index).joinToString("/") }, label = { Text(crumb, maxLines = 1) }) } }
                 Text("${children.size} elementos")
                 node?.let { Text("Tipo: ${it.type} · Tamaño: ${formatBytes(it.size)} · Fecha: ${date(if (it.modifiedAt > 0) it.modifiedAt else System.currentTimeMillis())} · Permisos virtuales: ${it.permissions} · Propietario virtual: ${it.owner} · Paquete asociado: ${it.packageName ?: "—"}") }
                 if (settings.developerMode) node?.physicalFile?.let { Text("Ruta física: ${it.absolutePath}") }
-                if (path != "/") Button(onClick = { fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }) { Text("Arriba") }
+                if (path != "/") Button(onClick = { explorerPath = path.substringBeforeLast('/', "").ifBlank { "/" } }) { Text("Arriba") }
             }
             items(children) { child ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(8.dp)) {
                     Text("${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "📁" else "📄"} ${child.name}")
                     Text("Tipo: ${child.type}")
                     Text("${child.type} · ${if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "" else formatBytes(child.size) + " · "}${date(if (child.modifiedAt > 0) child.modifiedAt else System.currentTimeMillis())} · ${child.permissions} · ${child.owner} · ${child.packageName ?: "—"}")
-                    Button(onClick = { fileDestination = routeFileNode(vfs, child) }) { Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "Abrir" else "Ver") }
+                    Button(onClick = { explorerPath = child.virtualPath }) { Text(if (child.type == com.valcrono.virtualstorage.VirtualFsNodeType.DIRECTORY) "Abrir" else "Ver") }
                 } }
             }
         }
-    }
-
-    @Composable
-    private fun TextFileViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String, kind: String = "Texto") {
-        var text by remember(path) { mutableStateOf("Cargando…") }; var meta by remember(path) { mutableStateOf("") }
-        LaunchedEffect(path) { withContext(Dispatchers.IO) {
-            val stat = vfs.stat(path, vfsAdminContext); val bytes = vfs.readBytes(path, vfsAdminContext, if (stat.size <= 2L*1024L*1024L) 2L*1024L*1024L else 64L*1024L)
-            val decoded = runCatching { String(bytes, Charsets.UTF_8) }.getOrElse { String(bytes, Charsets.ISO_8859_1) }
-            meta = "Ruta virtual: $path\nTamaño: ${formatBytes(stat.size)} · Fecha: ${date(stat.modifiedAt)} · Codificación: UTF-8/ISO-8859-1 · Líneas: ${decoded.lines().size}"
-            text = if (stat.size > 2L*1024L*1024L) decoded + "\n\n[Lectura paginada: se muestran los primeros 64 KB]" else decoded
-        } }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            item { TopAppBar(title = { Column { Text("$kind: ${path.substringAfterLast('/')}"); Text(path, maxLines = 1) } }, navigationIcon = { IconButton(onClick = { fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }) { Text("←") } }) }
-            item { Text(meta) }
-            item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Buscar", "Copiar", "Compartir/exportar", "Ajuste de línea", "Propiedades", "SHA-256").forEach { Button(onClick = { importStatus = it }) { Text(it) } } } }
-            item { androidx.compose.foundation.text.selection.SelectionContainer { Text(text) } }
-        }
-    }
-
-    @Composable private fun SQLiteViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String) { HexViewer(vfs, path, "SQLite snapshot (solo lectura): tablas, columnas, índices y primeras 100 filas al ejecutar en Android") }
-    @Composable private fun ApkViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String) { HexViewer(vfs, path, "APK: metadata, permisos, componentes, firma y SHA-256") }
-    @Composable private fun HexViewer(vfs: com.valcrono.virtualstorage.VirtualFileSystem, path: String, title: String) {
-        var body by remember(path) { mutableStateOf("Cargando…") }
-        LaunchedEffect(path) { withContext(Dispatchers.IO) { val stat=vfs.stat(path, vfsAdminContext); val bytes=vfs.readRange(path, vfsAdminContext, 0, 4096); val sha=vfs.calculateSha256(path, vfsAdminContext); body="Ruta virtual: $path\nTamaño: ${formatBytes(stat.size)}\nSHA-256: $sha\nPrimeros 4 KB:\n" + bytes.joinToString(" ") { "%02X".format(it) } } }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) { item { TopAppBar(title={Text(title)}, navigationIcon={IconButton(onClick={ fileDestination = FileDestination.Browser(path.substringBeforeLast('/', "").ifBlank { "/" }) }){Text("←")}}) }; item { Text(body) } }
     }
 
     @Composable
@@ -1125,13 +1055,6 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         bytes < 1024L * 1024 -> String.format(Locale.US, "%.2f KB", bytes / 1024.0)
         bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024))
         else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
-    }
-
-    private fun formatDuration(ms: Long): String = when {
-        ms < 1_000 -> "$ms ms"
-        ms < 60_000 -> "${ms / 1_000}s"
-        ms < 3_600_000 -> "${ms / 60_000}m ${ms % 60_000 / 1_000}s"
-        else -> "${ms / 3_600_000}h ${ms % 3_600_000 / 60_000}m"
     }
 
     private fun date(ms: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(ms))

@@ -12,16 +12,8 @@ import kotlinx.coroutines.flow.Flow
 import java.io.File
 import java.util.UUID
 
-object DatabaseProvider {
-    @Volatile private var instance: ValcronoDatabase? = null
-    fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
-    }
-    fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
-}
-
 class VirtualRepository(private val context: Context) {
-    val db: ValcronoDatabase = DatabaseProvider.get(context)
+    val db: ValcronoDatabase = Room.databaseBuilder(context, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
     private val storage = VirtualStorageManager(context.filesDir)
     fun packages(): Flow<List<VirtualPackageEntity>> = db.packages().observePackages()
     fun sessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
