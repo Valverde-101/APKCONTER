@@ -43,18 +43,7 @@
         android:label="Valcrono VirtualSpace"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
-        <activity
-            android:name=".RuntimeProxyActivity0"
-            android:process=":vapp0"
-            android:exported="false"
-            android:excludeFromRecents="false"
-            android:launchMode="singleTask" />
-        <activity
-            android:name=".RuntimeProxyActivity1"
-            android:process=":vapp1"
-            android:exported="false"
-            android:excludeFromRecents="false"
-            android:launchMode="singleTask" />
+        <activity android:name=".ProxyActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
