@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).enableMultiInstanceInvalidation().build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).enableMultiInstanceInvalidation().build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -137,16 +137,5 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
 val MIGRATION_8_9 = object : Migration(8, 9) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE runtime_slots ADD COLUMN activityAttached INTEGER NOT NULL DEFAULT 0")
-    }
-}
-
-
-val MIGRATION_9_10 = object : Migration(9, 10) {
-    override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_messages_receiverPackage ON virtual_messages(receiverPackage)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_messages_senderPackage ON virtual_messages(senderPackage)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_messages_receiverPackage_virtualUserId_status_createdAt ON virtual_messages(receiverPackage, virtualUserId, status, createdAt)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_messages_senderPackage_virtualUserId_createdAt ON virtual_messages(senderPackage, virtualUserId, createdAt)")
-        db.execSQL("UPDATE virtual_messages SET status='PENDING' WHERE status='DELIVERING'")
     }
 }

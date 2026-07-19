@@ -67,7 +67,7 @@ data class RuntimeSlotEntity(
     val activityAttached:Boolean = false
 )
 
-@Entity(tableName = "virtual_messages", indices = [Index("receiverPackage"), Index("senderPackage"), Index(value = ["receiverPackage", "virtualUserId", "status", "createdAt"]), Index(value = ["senderPackage", "virtualUserId", "createdAt"])])
+@Entity(tableName = "virtual_messages", indices = [Index("receiverPackage"), Index("senderPackage")])
 data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUserId:Int,val senderPackage:String,val receiverPackage:String,val type:String,val payload:String,val createdAt:Long,val deliveredAt:Long?,val consumedAt:Long?,val status:String,val attemptCount:Int)
 
 
@@ -103,19 +103,13 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 }
 @Dao interface VirtualMessageDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insert(message: VirtualMessageEntity): Long
-    @Query("SELECT * FROM virtual_messages WHERE receiverPackage=:toPackage AND virtualUserId=:virtualUserId AND status = 'PENDING' ORDER BY createdAt ASC, messageId ASC") fun observePendingFor(toPackage:String, virtualUserId:Int): Flow<List<VirtualMessageEntity>>
-    @Query("SELECT * FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId AND status = 'PENDING' ORDER BY createdAt ASC, messageId ASC") suspend fun pendingFor(toPkg:String,userId:Int): List<VirtualMessageEntity>
+    @Query("SELECT * FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId AND status IN ('PENDING','DELIVERING','DELIVERED') ORDER BY createdAt") suspend fun pendingFor(toPkg:String,userId:Int): List<VirtualMessageEntity>
     @Query("SELECT * FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId ORDER BY createdAt DESC LIMIT 100") suspend fun historyFor(toPkg:String,userId:Int): List<VirtualMessageEntity>
-    @Query("UPDATE virtual_messages SET status='DELIVERING', attemptCount=attemptCount+1 WHERE messageId=:messageId AND status='PENDING'") suspend fun claimPending(messageId:String): Int
-    @Query("UPDATE virtual_messages SET status='CONSUMED', deliveredAt=:time, consumedAt=:time WHERE messageId=:messageId AND status='DELIVERING'") suspend fun markConsumedAfterCallback(messageId:String,time:Long): Int
-    @Query("UPDATE virtual_messages SET status='PENDING' WHERE messageId=:messageId AND status='DELIVERING'") suspend fun requeueDelivering(messageId:String): Int
-    @Query("UPDATE virtual_messages SET status='PENDING' WHERE receiverPackage=:toPkg AND virtualUserId=:userId AND status='DELIVERING' AND deliveredAt IS NULL AND createdAt < :deadline") suspend fun requeueStaleDelivering(toPkg:String,userId:Int,deadline:Long): Int
-    @Query("UPDATE virtual_messages SET status='FAILED', consumedAt=:time WHERE messageId=:messageId AND status='DELIVERING'") suspend fun markFailed(messageId:String,time:Long): Int
+    @Query("UPDATE virtual_messages SET status='DELIVERED', deliveredAt=:time, attemptCount=attemptCount+1 WHERE messageId=:messageId AND status IN ('PENDING','DELIVERING')") suspend fun markDelivered(messageId:String,time:Long)
+    @Query("UPDATE virtual_messages SET status='CONSUMED', consumedAt=:time WHERE messageId=:messageId AND status!='CONSUMED'") suspend fun markConsumed(messageId:String,time:Long)
     @Query("DELETE FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId") suspend fun clearHistory(toPkg:String,userId:Int)
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE senderPackage=:pkg AND virtualUserId=:userId") suspend fun sentCount(pkg:String,userId:Int): Int
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE receiverPackage=:pkg AND virtualUserId=:userId") suspend fun receivedCount(pkg:String,userId:Int): Int
-    @Query("SELECT COUNT(*) FROM virtual_messages WHERE receiverPackage=:pkg AND virtualUserId=:userId AND status=:status") suspend fun countByStatus(pkg:String,userId:Int,status:String): Int
-    @Query("SELECT * FROM virtual_messages WHERE (receiverPackage=:pkg OR senderPackage=:pkg) AND virtualUserId=:userId ORDER BY createdAt DESC LIMIT 1") suspend fun lastForPackage(pkg:String,userId:Int): VirtualMessageEntity?
 }
 @Dao interface VirtualRuntimeDao {
     @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity)
@@ -148,7 +142,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=10, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=9, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao

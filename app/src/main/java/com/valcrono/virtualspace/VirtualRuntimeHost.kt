@@ -49,8 +49,8 @@ class AndroidVirtualAppEnvironment(private val context: Context, private val rep
         override fun listDatabases(): List<String> = resolver.resolve(pkg.virtualUserId,pkg.packageName,"data/databases").listFiles()?.map{it.name}.orEmpty()
     }
     override val messages = object : VirtualMessageApi {
-        override fun send(toPackage:String,type:String,payload:String): String { require(payload.toByteArray().size<=4096) { "PAYLOAD_TOO_LARGE" }; val id=UUID.randomUUID().toString(); val now=System.currentTimeMillis(); runBlocking { repository.db.messages().insert(VirtualMessageEntity(messageId=id, virtualUserId=pkg.virtualUserId, senderPackage=pkg.packageName, receiverPackage=toPackage, type=type, payload=payload, createdAt=now, deliveredAt=null, consumedAt=null, status="PENDING", attemptCount=0)) }; VLog.i("MessageDelivery", "MESSAGE_INSERTED messageId=$id senderPackage=${pkg.packageName} receiverPackage=$toPackage virtualUserId=${pkg.virtualUserId} timestamp=$now"); return id }
+        override fun send(toPackage:String,type:String,payload:String): String { require(payload.toByteArray().size<=4096) { "PAYLOAD_TOO_LARGE" }; val id=UUID.randomUUID().toString(); runBlocking { repository.db.messages().insert(VirtualMessageEntity(messageId=id, virtualUserId=pkg.virtualUserId, senderPackage=pkg.packageName, receiverPackage=toPackage, type=type, payload=payload, createdAt=System.currentTimeMillis(), deliveredAt=null, consumedAt=null, status="PENDING", attemptCount=0)) }; return id }
         override fun pending(): List<VirtualMessage> = runBlocking { repository.db.messages().pendingFor(pkg.packageName,pkg.virtualUserId).map{ VirtualMessage(it.messageId,it.senderPackage,it.receiverPackage,it.type,it.payload,it.status) } }
-        override fun markDelivered(messageId: String) { /* Host dispatcher owns claim/delivered/consumed transitions. Kept for source compatibility. */ }
+        override fun markDelivered(messageId: String) { runBlocking { repository.db.messages().markDelivered(messageId,System.currentTimeMillis()); repository.db.messages().markConsumed(messageId,System.currentTimeMillis()) } }
     }
 }
