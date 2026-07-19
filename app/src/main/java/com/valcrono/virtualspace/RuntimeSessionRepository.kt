@@ -31,7 +31,6 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
 
     suspend fun resolveOpenDecision(packageName: String, virtualUserId: Int): RuntimeOpenDecision? {
-        RuntimeHostRegistry.awaitReady()
         RuntimeSlotReclaimer(db).reconcileRuntimeState()
         val now = System.currentTimeMillis(); val elapsedNow = SystemClock.elapsedRealtime()
         val session = db.runtime().forPackage(packageName, virtualUserId) ?: return null
@@ -54,7 +53,6 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     }
 
     suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, maxActiveApps: Int = 2, now: Long = System.currentTimeMillis()): PreparedLaunch {
-        RuntimeHostRegistry.awaitReady()
         RuntimeSlotReclaimer(db).reconcileRuntimeState(now)
         return db.withTransaction {
         val before = db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)
@@ -90,7 +88,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
             sanitizedError = null,
         )
         db.runtime().upsert(row)
-        val reservedSlot = RuntimeSlotRepository(db, maxActiveApps).reserve(pkg.packageName, pkg.virtualUserId, sessionId, attemptId, now) ?: error("No hay procesos virtuales libres. diagnostics=" + allocatorDiagnostics(db.runtimeSlots().getAll()))
+        val reservedSlot = RuntimeSlotRepository(db, maxActiveApps).reserve(pkg.packageName, pkg.virtualUserId, sessionId, attemptId, now) ?: error("No hay procesos virtuales libres.")
         logLaunch("SESSION_STARTING_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, row.state)
         db.launchTokens().upsert(VirtualLaunchTokenEntity(token, sessionId, attemptId, pkg.virtualUserId, pkg.packageName, activity, now, now + TOKEN_TTL_MS, null))
         logLaunch("TOKEN_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, null, null)
@@ -126,7 +124,6 @@ class RuntimeSessionController(private val repository: RuntimeSessionRepository,
     suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { row -> val now = System.currentTimeMillis(); db.runtimeSlots().findBySession(row.sessionId)?.let { RuntimeSlotReclaimer(db).reclaimSlot(it.slotId, row.sessionId, RuntimeReclaimReason.STOPPED, now) } ?: row.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(row.sessionId, a, "STOPPED", "STOPPED", now, null, null); db.launchTokens().revokeAttempt(row.sessionId, a, now) }; metrics.removeMetrics(row.sessionId) } }
     suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { val now = System.currentTimeMillis(); db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", now, "LAUNCH_CANCELLED", "Inicio cancelado por el usuario."); db.launchTokens().revokeAttempt(sessionId, it, now); db.runtimeSlots().findBySession(sessionId)?.let { slot -> db.runtimeSlots().release(slot.slotId, now) }; metrics.removeMetrics(sessionId) } }
     suspend fun watchdogTick(timeoutMs: Long = START_TIMEOUT_MS) {
-        RuntimeHostRegistry.awaitReady()
         val now = System.currentTimeMillis(); val deadline = now - timeoutMs
         RuntimeSlotReclaimer(db).reconcileRuntimeState(now); repository.reconcileActiveSlots(now); val stale = db.runtime().staleStarting(deadline)
         diagnostics = WatchdogDiagnostics(true, now, stale.size, deadline, stale.minOfOrNull { now - it.lastHeartbeatAt }, System.identityHashCode(db).toString(16), null)
@@ -139,11 +136,6 @@ class RuntimeSessionController(private val repository: RuntimeSessionRepository,
         }
         db.launchTokens().cleanup(now, now - 24 * 60 * 60 * 1000L)
     }
-}
-
-private fun allocatorDiagnostics(slots: List<RuntimeSlotEntity>): String = slots.joinToString { slot ->
-    val reservable = slot.state == "FREE" && slot.sessionId == null && slot.packageName == null && slot.hostPid == null
-    "${slot.slotId}{slotState=${slot.state},occupied=${slot.sessionId != null},reservable=$reservable,sessionId=${slot.sessionId},pid=${slot.hostPid},reservationOwner=${slot.packageName},launchAttemptId=${slot.launchAttemptId},reclaimInProgress=${slot.reclaimInProgress}}"
 }
 
 class RuntimeMetricsRepository(private val tracker: RuntimeResourceTracker) {
