@@ -30,13 +30,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     private var boundSessionId: String? = null
     private val activityInstanceId = UUID.randomUUID().toString()
     private val handler = Handler(Looper.getMainLooper())
-    private val deathRecipient = IBinder.DeathRecipient {
-        val sid = sessionId
-        handler.post { binder = null; isBound = false; isBinding = false; boundSessionId = null; renderError("PROCESS_LOST: binder muerto") }
-        if (sid.isNotBlank()) CoroutineScope(Dispatchers.IO).launch {
-            DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, RuntimeReclaimReason.BINDER_DIED) }
-        }
-    }
+    private val heartbeatTick = object : Runnable { override fun run() { binder?.requestHeartbeat(); handler.postDelayed(this, 3_000) } }
     private val uiCallback = object : RuntimeProcessService.RuntimeUiCallback {
         override fun onContentChanged(sessionId: String, version: Long, content: VirtualContent) {
             handler.post { if (this@BaseRuntimeProxyActivity.sessionId == sessionId) render(content) }
@@ -45,15 +39,13 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             binder = service as? RuntimeProcessService.RuntimeBinder
-            runCatching { service?.linkToDeath(deathRecipient, 0) }
             isBound = true; isBinding = false; boundSessionId = sessionId
             recordActivityAttached()
             val content = binder?.attachUi(sessionId, uiCallback)
             if (content?.result?.success == true && content.content != null) render(content.content) else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
+            handler.post(heartbeatTick)
         }
-        override fun onServiceDisconnected(name: ComponentName?) { val sid = boundSessionId; binder = null; isBound = false; isBinding = false; boundSessionId = null; if (sid != null) CoroutineScope(Dispatchers.IO).launch { DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, RuntimeReclaimReason.BINDER_DIED) } }; renderError("PROCESS_LOST: servicio desconectado") }
-        override fun onBindingDied(name: ComponentName?) { onServiceDisconnected(name) }
-        override fun onNullBinding(name: ComponentName?) { onServiceDisconnected(name) }
+        override fun onServiceDisconnected(name: ComponentName?) { binder = null; isBound = false; isBinding = false; boundSessionId = null; renderError("PROCESS_LOST: servicio desconectado") }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,7 +98,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     override fun onResume() { super.onResume(); recordActivityAttached(); binder?.resumeSession(sessionId) }
     override fun onPause() { binder?.detachUi(sessionId); super.onPause() }
     override fun onStop() { recordActivityDetached(); super.onStop() }
-    override fun onDestroy() { runCatching { binder?.unlinkToDeath(deathRecipient, 0) }; if (isBound || isBinding) runCatching { unbindService(connection) }; isBound = false; isBinding = false; boundSessionId = null; binder = null; super.onDestroy() }
+    override fun onDestroy() { handler.removeCallbacks(heartbeatTick); if (isBound || isBinding) runCatching { unbindService(connection) }; isBound = false; isBinding = false; boundSessionId = null; binder = null; super.onDestroy() }
 }
 
 fun serviceFor(slotId: RuntimeSlotId): Class<out android.app.Service> = when (slotId) { RuntimeSlotId.VAPP0 -> RuntimeSlot0Service::class.java; RuntimeSlotId.VAPP1 -> RuntimeSlot1Service::class.java }

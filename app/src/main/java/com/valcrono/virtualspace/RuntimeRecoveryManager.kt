@@ -1,12 +1,9 @@
 package com.valcrono.virtualspace
 
-import android.os.SystemClock
-
 class RuntimeRecoveryManager(private val db: ValcronoDatabase) {
-    suspend fun recover(now: Long = System.currentTimeMillis(), staleHeartbeatMs: Long = 30_000L) {
+    suspend fun recover(now: Long = System.currentTimeMillis(), staleHeartbeatMs: Long = 15_000L) {
         RuntimeSlotRepository(db).ensureSeeded()
-        RuntimeSlotReclaimer(db).reconcileRuntimeState(now)
-        db.runtimeSlots().recoverStaleSlots(SystemClock.elapsedRealtime() - staleHeartbeatMs, now)
+        db.runtimeSlots().recoverStaleSlots(now - staleHeartbeatMs, now)
         db.runtime().markStaleStarting(now)
         db.runtime().markProcessLost(now)
     }
