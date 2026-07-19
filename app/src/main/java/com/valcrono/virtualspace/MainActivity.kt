@@ -651,7 +651,35 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 Text("ClassLoader cargado: ${if (slot.state in setOf("ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND", "PAUSED_BY_USER")) "sí" else "no"}")
                 Text("última fase: ${slot.state}")
                 Text("errorCode: ${slot.errorCode ?: "—"}")
+                val messageRows = slot.packageName?.let { pkg -> slot.virtualUserId?.let { userId -> runBlocking {
+                    val dao = repository.db.messages()
+                    val last = dao.lastForPackage(pkg, userId)
+                    RuntimeMessageDiagnostics(
+                        pending = dao.countByStatus(pkg, userId, "PENDING"),
+                        delivering = dao.countByStatus(pkg, userId, "DELIVERING"),
+                        consumed = dao.countByStatus(pkg, userId, "CONSUMED"),
+                        failed = dao.countByStatus(pkg, userId, "FAILED"),
+                        lastMessageId = last?.messageId,
+                        lastSendAt = if (last?.senderPackage == pkg) last.createdAt else null,
+                        lastDeliveryAt = last?.deliveredAt,
+                        lastError = slot.errorMessage,
+                        collectorActive = slot.state in setOf("ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND", "PAUSED_BY_USER"),
+                        dispatcherSessionId = slot.sessionId?.let { sid -> "$sid:${slot.slotId}:$pkg:$userId" },
+                        senderPackage = last?.senderPackage,
+                        receiverPackage = last?.receiverPackage,
+                    )
+                } } }
                 Text("errorMessage: ${slot.errorMessage ?: "—"}")
+                messageRows?.let { diag ->
+                    Text("Mensajes:", style = MaterialTheme.typography.titleSmall)
+                    Text("pendientes: ${diag.pending} · entregando: ${diag.delivering} · consumidos: ${diag.consumed} · fallidos: ${diag.failed}")
+                    Text("último messageId: ${diag.lastMessageId?.take(8) ?: "—"}")
+                    Text("último envío: ${diag.lastSendAt?.let(::date) ?: "—"} · última entrega: ${diag.lastDeliveryAt?.let(::date) ?: "—"}")
+                    Text("último error: ${diag.lastError ?: "—"}")
+                    Text("collector activo: ${if (diag.collectorActive) "sí" else "no"}")
+                    Text("dispatcherSessionId: ${diag.dispatcherSessionId ?: "—"}")
+                    Text("emisor/receptor: ${diag.senderPackage ?: "—"} → ${diag.receiverPackage ?: "—"}")
+                }
             }
         }
     }

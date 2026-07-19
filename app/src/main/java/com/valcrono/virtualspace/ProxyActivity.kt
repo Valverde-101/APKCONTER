@@ -31,12 +31,17 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     private val activityInstanceId = UUID.randomUUID().toString()
     private val handler = Handler(Looper.getMainLooper())
     private val heartbeatTick = object : Runnable { override fun run() { binder?.requestHeartbeat(); handler.postDelayed(this, 3_000) } }
+    private val uiCallback = object : RuntimeProcessService.RuntimeUiCallback {
+        override fun onContentChanged(sessionId: String, version: Long, content: VirtualContent) {
+            handler.post { if (this@BaseRuntimeProxyActivity.sessionId == sessionId) render(content) }
+        }
+    }
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             binder = service as? RuntimeProcessService.RuntimeBinder
             isBound = true; isBinding = false; boundSessionId = sessionId
             recordActivityAttached()
-            val content = binder?.attachUi(sessionId)
+            val content = binder?.attachUi(sessionId, uiCallback)
             if (content?.result?.success == true && content.content != null) render(content.content) else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
             handler.post(heartbeatTick)
         }
@@ -58,7 +63,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
         if (binder != null && boundSessionId == nextSessionId) {
             sessionId = nextSessionId
             recordActivityAttached()
-            val content = binder?.attachUi(sessionId)
+            val content = binder?.attachUi(sessionId, uiCallback)
             if (content?.result?.success == true && content.content != null) render(content.content) else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
             return
         }
