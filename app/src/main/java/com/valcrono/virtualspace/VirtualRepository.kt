@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -121,5 +121,14 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         db.execSQL("INSERT OR IGNORE INTO runtime_slots (slotId, processName, state, packageName, virtualUserId, sessionId, launchAttemptId, hostPid, assignedAt, startedAt, lastHeartbeatAt, stoppedAt, pssBytes, errorCode, errorMessage) VALUES ('VAPP0', ':vapp0', 'FREE', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)")
         db.execSQL("INSERT OR IGNORE INTO runtime_slots (slotId, processName, state, packageName, virtualUserId, sessionId, launchAttemptId, hostPid, assignedAt, startedAt, lastHeartbeatAt, stoppedAt, pssBytes, errorCode, errorMessage) VALUES ('VAPP1', ':vapp1', 'FREE', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)")
         db.execSQL("UPDATE virtual_runtime_sessions SET state='STOPPED', launchPhase='MIGRATED_MULTIPROCESS' WHERE state IN ('ACTIVE','PAUSED','STARTING')")
+    }
+}
+
+
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN taskId INTEGER")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN activityInstanceId TEXT")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN activityLastAttachedAt INTEGER")
     }
 }
