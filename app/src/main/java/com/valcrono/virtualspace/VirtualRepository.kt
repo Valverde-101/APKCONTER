@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).enableMultiInstanceInvalidation().build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11).enableMultiInstanceInvalidation().build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -148,5 +148,21 @@ val MIGRATION_9_10 = object : Migration(9, 10) {
         db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_messages_receiverPackage_virtualUserId_status_createdAt ON virtual_messages(receiverPackage, virtualUserId, status, createdAt)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_messages_senderPackage_virtualUserId_createdAt ON virtual_messages(senderPackage, virtualUserId, createdAt)")
         db.execSQL("UPDATE virtual_messages SET status='PENDING' WHERE status='DELIVERING'")
+    }
+}
+
+
+val MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN lastHeartbeatElapsedRealtime INTEGER")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN lastHeartbeatWallClock INTEGER")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN binderGeneration INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN binderAlive INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN reclaimInProgress INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN lastReclaimReason TEXT")
+        db.execSQL("ALTER TABLE runtime_slots ADD COLUMN lastReclaimAt INTEGER")
+        db.execSQL("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, stoppedAt=strftime('%s','now')*1000, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, activityAttached=0, binderAlive=0, lastReclaimReason='MIGRATION_RECONCILE', lastReclaimAt=strftime('%s','now')*1000 WHERE state IN ('RESERVED','STARTING','ACTIVE_FOREGROUND','ACTIVE_BACKGROUND','PAUSED_BY_USER','CRASHED','ERROR')")
+        db.execSQL("UPDATE virtual_messages SET status='PENDING' WHERE status='DELIVERING'")
+        db.execSQL("UPDATE virtual_runtime_sessions SET state='STOPPED', launchPhase='MIGRATION_RECONCILE', stoppedAt=strftime('%s','now')*1000, errorCode='STOPPED_PROCESS_LOST', sanitizedError='El proceso anterior ya no existe.' WHERE state IN ('ACTIVE','PAUSED','STARTING')")
     }
 }
