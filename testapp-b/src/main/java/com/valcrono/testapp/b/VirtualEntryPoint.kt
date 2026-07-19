@@ -4,23 +4,22 @@ import com.valcrono.runtime.*
 
 class VirtualEntryPoint : VirtualAppEntryPoint {
     private lateinit var env: VirtualAppEnvironment
-    private val messages = mutableListOf<String>()
+    private val messages = linkedSetOf<String>()
 
     override fun onCreate(environment: VirtualAppEnvironment) {
         env = environment
         messages += env.files.readText("files/received.txt")?.lines().orEmpty().filter { it.isNotBlank() }
-        env.database.execute("b.db", "CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, sender TEXT NOT NULL, payload TEXT NOT NULL, received_at INTEGER NOT NULL)")
+        env.messages.pending().forEach { onVirtualMessage(it); env.messages.markDelivered(it.id) }
     }
 
     override fun createContent(): VirtualContent = screen("B cargada desde APK importado")
 
     override fun onVirtualMessage(message: VirtualMessage): VirtualContent {
-        val row = "${message.id.take(8)} · ${message.fromPackage}: ${message.payload}"
-        messages += row
+        messages += "${message.fromPackage}: ${message.payload}"
         env.files.writeText("files/received.txt", messages.joinToString("\n"))
         env.preferences.putString("messages", "last", message.payload)
-        env.database.execute("b.db", "CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, sender TEXT NOT NULL, payload TEXT NOT NULL, received_at INTEGER NOT NULL)")
-        env.database.execute("b.db", "INSERT OR IGNORE INTO messages(message_id,sender,payload,received_at) VALUES(?,?,?,?)", listOf(message.id, message.fromPackage, message.payload, System.currentTimeMillis().toString()))
+        env.database.execute("b.db", "CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT, payload TEXT)")
+        env.database.execute("b.db", "INSERT INTO messages(sender,payload) VALUES(?,?)", listOf(message.fromPackage, message.payload))
         return screen("Mensaje recibido y guardado")
     }
 
