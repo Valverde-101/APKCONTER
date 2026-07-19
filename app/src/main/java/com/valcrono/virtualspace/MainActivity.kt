@@ -186,6 +186,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         pendingLaunchPackage = null
     }
 
+    override fun onResume() { super.onResume(); if (::runtimeSessions.isInitialized) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileActiveSlots() } }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installViewerCrashReporter()
@@ -394,7 +396,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { destination = Destination.PROCESSES }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Procesos") }
                 }
             }
-            items(packages) { pkg -> val session = sessions.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }; AppCard(pkg, RuntimeAppUiState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }, effectiveRuntimeState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }))) }
+            items(packages) { pkg -> val session = sessions.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }; AppCard(pkg, RuntimeAppUiState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }, deriveRuntimeEffectiveState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }))) }
         }
     }
 
@@ -405,7 +407,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         var menuExpanded by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         val snapshot by resourceTracker.snapshot.collectAsState()
-        val state = session?.state?.let { runCatching { SessionState.valueOf(it) }.getOrNull() } ?: SessionState.STOPPED
+        val effectiveState = runtimeUiState.effectiveState
         Card(Modifier.fillMaxWidth().semantics { contentDescription = "Aplicación ${pkg.label}" }) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -418,7 +420,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     }
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Estado: ${sessionStateLabel(state)}")
+                    Text("Estado: ${effectiveStateLabel(effectiveState)}")
                     Text(runtimeSlotLabel(slot))
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
@@ -426,18 +428,18 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     if (pkg.compatibilityLevel == "COOPERATIVE_SUPPORTED" && pkg.entryPointClass != null) {
                         Button(
                             onClick = { openVirtual(pkg) },
-                            enabled = state != SessionState.STARTING && pkg.enabled && !pkg.damaged,
+                            enabled = effectiveState != RuntimeEffectiveState.STARTING && pkg.enabled && !pkg.damaged,
                             modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                        ) { Text(launchButtonLabel(session?.state ?: "STOPPED")) }
+                        ) { Text(launchButtonLabel(effectiveState.name)) }
                     } else {
                         Text("APK disponible para inspección; runtime no compatible.")
                         Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
                     }
-                    when (state) {
-                        SessionState.STARTING -> OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar") }
-                        SessionState.ACTIVE -> { OutlinedButton(onClick = { pausePackage(pkg) }) { Text("Pausar") }; OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Detener") } }
-                        SessionState.PAUSED -> { OutlinedButton(onClick = { openVirtual(pkg) }) { Text("Reanudar") }; OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Detener") } }
-                        SessionState.ERROR -> OutlinedButton(onClick = { importStatus = session?.sanitizedError ?: "Error no disponible" }) { Text("Ver error") }
+                    when (effectiveState) {
+                        RuntimeEffectiveState.STARTING -> OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar") }
+                        RuntimeEffectiveState.ACTIVE_FOREGROUND, RuntimeEffectiveState.ACTIVE_BACKGROUND -> { OutlinedButton(onClick = { pausePackage(pkg) }) { Text("Pausar") }; OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Detener") } }
+                        RuntimeEffectiveState.PAUSED -> { OutlinedButton(onClick = { openVirtual(pkg) }) { Text("Reanudar") }; OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Detener") } }
+                        RuntimeEffectiveState.ERROR -> OutlinedButton(onClick = { importStatus = session?.sanitizedError ?: "Error no disponible" }) { Text("Ver error") }
                         else -> Unit
                     }
                     OutlinedButton(
@@ -1130,6 +1132,15 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         else -> RuntimeEffectiveState.STOPPED
     }
 
+    private fun effectiveStateLabel(state: RuntimeEffectiveState): String = when (state) {
+        RuntimeEffectiveState.ACTIVE_FOREGROUND -> "Activa"
+        RuntimeEffectiveState.ACTIVE_BACKGROUND -> "Activa en segundo plano"
+        RuntimeEffectiveState.STARTING -> "Abriendo…"
+        RuntimeEffectiveState.PAUSED -> "Pausada"
+        RuntimeEffectiveState.ERROR -> "Error"
+        RuntimeEffectiveState.STOPPED -> "Detenida"
+    }
+
     private fun launchButtonLabel(state: String): String = when (state) {
         "STARTING" -> "Abriendo…"
         "ACTIVE", "ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND" -> "Volver a la app"
@@ -1140,13 +1151,19 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     private fun runtimeSlotLabel(slot: RuntimeSlotEntity?): String = if (slot != null) "Slot: ${slot.slotId} · PID: ${slot.hostPid ?: "—"} · PSS: ${formatBytes(slot.pssBytes ?: 0)}" else "RAM actual: 0 MB · Sin proceso activo"
 
+    private fun warmResumeIntent(decision: RuntimeOpenDecision): Intent = Intent(this, proxyActivityFor(decision.slotId))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra("openMode", "WARM_RESUME")
+        .putExtra("sessionId", decision.sessionId)
+        .putExtra("slotId", decision.slotId.name)
+
     private fun bringExistingTaskToFront(pkg: VirtualPackageEntity, decision: RuntimeOpenDecision) {
-        val taskId = decision.taskId
-        if (taskId != null) {
-            runCatching { (getSystemService(ACTIVITY_SERVICE) as ActivityManager).moveTaskToFront(taskId, 0); importStatus = "Volviendo a ${pkg.label}"; return }
-        }
-        startActivity(Intent(this@MainActivity, proxyActivityFor(decision.slotId)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP /* legacy: Intent.FLAG_ACTIVITY_REORDER_TO_FRONT */).putExtra("openMode", "WARM_RESUME").putExtra("sessionId", decision.sessionId).putExtra("slotId", decision.slotId.name))
-        importStatus = "Volviendo a ${pkg.label}"
+        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        val matchingTask = decision.taskId?.let { id -> activityManager.appTasks.firstOrNull { it.taskInfo?.id == id && it.taskInfo?.baseActivity?.className == proxyActivityFor(decision.slotId).name } }
+        if (decision.taskId != null && matchingTask == null) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtimeSlots().clearActivityTask(decision.slotId.name, decision.sessionId) }
+        runCatching { matchingTask?.moveToFront() }.onFailure { VLog.e("UI", "moveToFront failed slot=${decision.slotId} sessionId=${decision.sessionId}", it) }
+        runCatching { startActivity(warmResumeIntent(decision)); importStatus = "Volviendo a ${pkg.label}" }
+            .onFailure { importStatus = "RECOVER_BIND_FAILED: no se pudo volver a ${pkg.label}: ${it.message}"; VLog.e("UI", importStatus, it) }
     }
 
     private fun bringRuntimeToForeground(pkg: VirtualPackageEntity, prepared: PreparedLaunch, activity: String) {
@@ -1176,6 +1193,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             startService(Intent(this@MainActivity, serviceFor(prepared.slotId ?: RuntimeSlotId.VAPP0)).putExtra("runtimeLaunchRequest", RuntimeLaunchRequest(pkg.virtualUserId, pkg.packageName, activity, prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name)))
             startActivity(
                 Intent(this@MainActivity, proxyActivityFor(prepared.slotId ?: RuntimeSlotId.VAPP0))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                     .putExtra("virtualUserId", pkg.virtualUserId)
                     .putExtra("virtualPackageName", pkg.packageName)
                     .putExtra("virtualActivityName", activity)
