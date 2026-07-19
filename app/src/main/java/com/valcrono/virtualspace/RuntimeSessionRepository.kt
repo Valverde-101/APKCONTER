@@ -1,7 +1,6 @@
 package com.valcrono.virtualspace
 
 import android.os.Process
-import android.system.Os
 import androidx.room.withTransaction
 import com.valcrono.core.VLog
 import kotlinx.coroutines.flow.Flow
@@ -12,43 +11,8 @@ const val START_TIMEOUT_MS: Long = 30_000L
 
 data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean, val slotId: RuntimeSlotId?)
 
-enum class RuntimeOpenMode { COLD_START, WARM_RESUME, RECOVER_SERVICE }
-enum class RuntimeEffectiveState { STOPPED, STARTING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, PAUSED, ERROR }
-data class RuntimeAppUiState(val session: VirtualRuntimeSessionEntity?, val slot: RuntimeSlotEntity?, val effectiveState: RuntimeEffectiveState)
-
-data class RuntimeOpenDecision(
-    val mode: RuntimeOpenMode,
-    val sessionId: String,
-    val slotId: RuntimeSlotId,
-    val taskId: Int?,
-    val processAlive: Boolean,
-    val heartbeatFresh: Boolean,
-    val activityAttached: Boolean
-)
-
 class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
-
-    suspend fun resolveOpenDecision(packageName: String, virtualUserId: Int): RuntimeOpenDecision? {
-        val now = System.currentTimeMillis()
-        val session = db.runtime().forPackage(packageName, virtualUserId) ?: return null
-        val slot = db.runtimeSlots().findBySession(session.sessionId) ?: return null
-        val pid = slot.hostPid
-        val processAlive = pid != null && runCatching { Os.kill(pid, 0); true }.getOrDefault(false)
-        val heartbeatFresh = (slot.lastHeartbeatAt ?: session.lastHeartbeatAt) >= now - START_TIMEOUT_MS
-        val slotActive = slot.state == "ACTIVE_FOREGROUND" || slot.state == "ACTIVE_BACKGROUND"
-        val classLoaderLoaded = session.classLoaderState == "LOADED"
-        if (session.state == "STARTING" && slotActive && processAlive && heartbeatFresh && classLoaderLoaded) {
-            db.runtime().repairActive(session.sessionId, now, pid!!)
-            logLaunch("STATE_RECONCILED", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, "STARTING/${slot.state}", "ACTIVE/${slot.state}")
-        }
-        val mode = when {
-            (session.state == "ACTIVE" || (session.state == "STARTING" && slotActive)) && slotActive && processAlive && heartbeatFresh && classLoaderLoaded -> RuntimeOpenMode.WARM_RESUME
-            pid != null && processAlive && heartbeatFresh -> RuntimeOpenMode.RECOVER_SERVICE
-            else -> RuntimeOpenMode.COLD_START
-        }
-        return RuntimeOpenDecision(mode, session.sessionId, RuntimeSlotId.valueOf(slot.slotId), slot.taskId, processAlive, heartbeatFresh, slot.activityLastAttachedAt != null)
-    }
 
     suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, maxActiveApps: Int = 2, now: Long = System.currentTimeMillis()): PreparedLaunch = db.withTransaction {
         val before = db.runtime().forPackage(pkg.packageName, pkg.virtualUserId)
