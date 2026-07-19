@@ -15,9 +15,7 @@ enum class RuntimeReclaimReason(val code: String, val message: String) {
     PROCESS_LOST("PROCESS_LOST", "El proceso anterior ya no existe."),
     STOPPED("STOPPED", "Sesión detenida"),
     CANCELLED("LAUNCH_CANCELLED", "Inicio cancelado"),
-    STATE_RECONCILED("STATE_RECONCILED", "Estado reconciliado"),
-    HOST_RESTART("HOST_RESTART", "Reinicio del host reconciliado"),
-    SLOT_NORMALIZED_FREE("SLOT_NORMALIZED_FREE", "Slot vacío normalizado a FREE")
+    STATE_RECONCILED("STATE_RECONCILED", "Estado reconciliado")
 }
 
 class RuntimeSlotReclaimer(private val db: ValcronoDatabase) {
@@ -27,21 +25,18 @@ class RuntimeSlotReclaimer(private val db: ValcronoDatabase) {
             if (slot.sessionId != expectedSessionId) return@withTransaction false
             val session = db.runtime().get(expectedSessionId)
             if (session?.currentLaunchAttemptId != null) {
-                val state = if (reason == RuntimeReclaimReason.STOPPED || reason == RuntimeReclaimReason.CANCELLED) "STOPPED" else "DEAD"
+                val state = if (reason == RuntimeReclaimReason.STOPPED || reason == RuntimeReclaimReason.CANCELLED) "STOPPED" else "ERROR"
                 db.runtime().compareAndSetState(expectedSessionId, session.currentLaunchAttemptId, state, reason.name, now, reason.code, reason.message)
                 db.launchTokens().revokeAttempt(expectedSessionId, session.currentLaunchAttemptId, now)
             }
             if (slot.packageName != null && slot.virtualUserId != null) db.messages().requeueDeliveringFor(slot.packageName, slot.virtualUserId)
-            val changed = db.runtimeSlots().reclaimSlot(slotId, expectedSessionId, reason.name, reason.code, reason.message, now) > 0
-            val after = db.runtimeSlots().get(slotId)
-            check(after?.state == "FREE" && after.sessionId == null && after.packageName == null && after.hostPid == null) { "SLOT_RECLAIM_INVARIANT_FAILED slotId=$slotId" }
-            changed
+            db.runtimeSlots().reclaimSlot(slotId, expectedSessionId, reason.name, reason.code, reason.message, now) > 0
         }
     }
 
     suspend fun reconcileRuntimeState(now: Long = System.currentTimeMillis()): Int = slotReclaimMutex.withLock {
         RuntimeSlotRepository(db).ensureSeeded()
-        var reclaimed = db.runtimeSlots().normalizeEmptySlots(RuntimeReclaimReason.SLOT_NORMALIZED_FREE.name, now)
+        var reclaimed = 0
         val elapsedNow = SystemClock.elapsedRealtime()
         db.runtimeSlots().getAll().forEach { slot ->
             val sid = slot.sessionId
