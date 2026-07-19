@@ -57,6 +57,8 @@ data class RuntimeSlotEntity(
     val assignedAt:Long?,
     val startedAt:Long?,
     val lastHeartbeatAt:Long?,
+    val lastHeartbeatElapsedRealtime:Long? = null,
+    val lastHeartbeatWallClock:Long? = null,
     val stoppedAt:Long?,
     val pssBytes:Long?,
     val errorCode:String?,
@@ -64,7 +66,12 @@ data class RuntimeSlotEntity(
     val taskId:Int? = null,
     val activityInstanceId:String? = null,
     val activityLastAttachedAt:Long? = null,
-    val activityAttached:Boolean = false
+    val activityAttached:Boolean = false,
+    val binderGeneration:Long = 0,
+    val binderAlive:Boolean = false,
+    val reclaimInProgress:Boolean = false,
+    val lastReclaimReason:String? = null,
+    val lastReclaimAt:Long? = null
 )
 
 @Entity(tableName = "virtual_messages", indices = [Index("receiverPackage"), Index("senderPackage"), Index(value = ["receiverPackage", "virtualUserId", "status", "createdAt"]), Index(value = ["senderPackage", "virtualUserId", "createdAt"])])
@@ -79,18 +86,19 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("SELECT * FROM runtime_slots WHERE packageName=:packageName AND virtualUserId=:virtualUserId LIMIT 1") suspend fun findByPackage(packageName:String, virtualUserId:Int): RuntimeSlotEntity?
     @Query("SELECT * FROM runtime_slots WHERE state IN ('FREE','STOPPED') AND slotId IN (:enabledSlotIds) ORDER BY slotId LIMIT 1") suspend fun firstFree(enabledSlotIds: List<String>): RuntimeSlotEntity?
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertDefaults(slots: List<RuntimeSlotEntity>)
-    @Query("UPDATE runtime_slots SET state='RESERVED', packageName=:packageName, virtualUserId=:virtualUserId, sessionId=:sessionId, launchAttemptId=:attemptId, hostPid=NULL, assignedAt=:now, startedAt=NULL, lastHeartbeatAt=:now, stoppedAt=NULL, pssBytes=NULL, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId AND state IN ('FREE','STOPPED','CRASHED','ERROR')") suspend fun reserveSlot(slotId:String, packageName:String, virtualUserId:Int, sessionId:String, attemptId:String, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='STARTING', sessionId=:sessionId, launchAttemptId=:attemptId, assignedAt=:now, lastHeartbeatAt=:now, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId") suspend fun reserveExisting(slotId:String, sessionId:String, attemptId:String, now:Long): Int
+    @Query("UPDATE runtime_slots SET state='RESERVED', packageName=:packageName, virtualUserId=:virtualUserId, sessionId=:sessionId, launchAttemptId=:attemptId, hostPid=NULL, assignedAt=:now, startedAt=NULL, lastHeartbeatAt=:now, lastHeartbeatElapsedRealtime=:elapsed, lastHeartbeatWallClock=:now, stoppedAt=NULL, pssBytes=NULL, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId AND state IN ('FREE','STOPPED','CRASHED','ERROR')") suspend fun reserveSlot(slotId:String, packageName:String, virtualUserId:Int, sessionId:String, attemptId:String, now:Long, elapsed:Long): Int
+    @Query("UPDATE runtime_slots SET state='STARTING', sessionId=:sessionId, launchAttemptId=:attemptId, assignedAt=:now, lastHeartbeatAt=:now, lastHeartbeatElapsedRealtime=:elapsed, lastHeartbeatWallClock=:now, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId") suspend fun reserveExisting(slotId:String, sessionId:String, attemptId:String, now:Long, elapsed:Long): Int
     @Query("UPDATE runtime_slots SET state=:toState WHERE slotId=:slotId AND state=:fromState") suspend fun compareAndSetState(slotId:String, fromState:String, toState:String): Int
-    @Query("UPDATE runtime_slots SET state=:state, hostPid=:pid, startedAt=COALESCE(startedAt,:now), lastHeartbeatAt=:now, pssBytes=:pssBytes, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId AND sessionId=:sessionId AND launchAttemptId=:attemptId") suspend fun acknowledgeStarted(slotId:String, sessionId:String, attemptId:String, pid:Int, state:String, pssBytes:Long?, now:Long): Int
-    @Query("UPDATE runtime_slots SET lastHeartbeatAt=:now, hostPid=:pid, state=:state, pssBytes=:pssBytes WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun heartbeat(slotId:String, sessionId:String, pid:Int, state:String, pssBytes:Long?, now:Long): Int
-    @Query("UPDATE runtime_slots SET pssBytes=:pssBytes, lastHeartbeatAt=:now, hostPid=:pid WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun updatePss(slotId:String, sessionId:String, pid:Int, pssBytes:Long, now:Long): Int
-    @Query("UPDATE runtime_slots SET taskId=:taskId, activityInstanceId=:activityInstanceId, activityLastAttachedAt=:now, activityAttached=1, hostPid=:pid WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun markActivityAttached(slotId:String, sessionId:String, taskId:Int, activityInstanceId:String, now:Long, pid:Int): Int
+    @Query("UPDATE runtime_slots SET state=:state, hostPid=:pid, startedAt=COALESCE(startedAt,:now), lastHeartbeatAt=:now, lastHeartbeatElapsedRealtime=:elapsed, lastHeartbeatWallClock=:now, pssBytes=:pssBytes, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId AND sessionId=:sessionId AND launchAttemptId=:attemptId") suspend fun acknowledgeStarted(slotId:String, sessionId:String, attemptId:String, pid:Int, state:String, pssBytes:Long?, now:Long, elapsed:Long): Int
+    @Query("UPDATE runtime_slots SET lastHeartbeatAt=:now, lastHeartbeatElapsedRealtime=:elapsed, lastHeartbeatWallClock=:now, hostPid=:pid, state=:state, pssBytes=:pssBytes WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun heartbeat(slotId:String, sessionId:String, pid:Int, state:String, pssBytes:Long?, now:Long, elapsed:Long): Int
+    @Query("UPDATE runtime_slots SET pssBytes=:pssBytes, lastHeartbeatAt=:now, lastHeartbeatElapsedRealtime=:elapsed, lastHeartbeatWallClock=:now, hostPid=:pid WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun updatePss(slotId:String, sessionId:String, pid:Int, pssBytes:Long, now:Long, elapsed:Long): Int
+    @Query("UPDATE runtime_slots SET taskId=:taskId, activityInstanceId=:activityInstanceId, activityLastAttachedAt=:now, activityAttached=1, hostPid=:pid, binderAlive=1, binderGeneration=binderGeneration+1 WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun markActivityAttached(slotId:String, sessionId:String, taskId:Int, activityInstanceId:String, now:Long, pid:Int): Int
     @Query("UPDATE runtime_slots SET activityAttached=0 WHERE slotId=:slotId AND sessionId=:sessionId AND activityInstanceId=:activityInstanceId") suspend fun markActivityDetached(slotId:String, sessionId:String, activityInstanceId:String): Int
     @Query("UPDATE runtime_slots SET taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0 WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun clearActivityTask(slotId:String, sessionId:String): Int
     @Query("UPDATE runtime_slots SET state='CRASHED', errorCode=:code, errorMessage=:message, stoppedAt=:now WHERE slotId=:slotId") suspend fun markCrashed(slotId:String, code:String, message:String?, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=NULL, errorMessage=NULL WHERE slotId=:slotId") suspend fun release(slotId:String, now:Long): Int
-    @Query("UPDATE runtime_slots SET state='CRASHED', errorCode='STALE_HEARTBEAT', errorMessage='Heartbeat vencido', stoppedAt=:now WHERE state IN ('RESERVED','STARTING','ACTIVE_FOREGROUND','ACTIVE_BACKGROUND') AND lastHeartbeatAt < :deadline") suspend fun recoverStaleSlots(deadline:Long, now:Long): Int
+    @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason=NULL, lastReclaimAt=NULL WHERE slotId=:slotId") suspend fun release(slotId:String, now:Long): Int
+    @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=:now, pssBytes=NULL, errorCode='STALE_HEARTBEAT', errorMessage='Heartbeat vencido', taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason='STALE_HEARTBEAT', lastReclaimAt=:now WHERE state IN ('RESERVED','STARTING','ACTIVE_FOREGROUND','ACTIVE_BACKGROUND','PAUSED_BY_USER','CRASHED','ERROR') AND COALESCE(lastHeartbeatElapsedRealtime,lastHeartbeatAt,0) < :deadline") suspend fun recoverStaleSlots(deadline:Long, now:Long): Int
+    @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=:code, errorMessage=:message, taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason=:reason, lastReclaimAt=:now WHERE slotId=:slotId AND sessionId=:expectedSessionId") suspend fun reclaimSlot(slotId:String, expectedSessionId:String, reason:String, code:String, message:String?, now:Long): Int
 }
 
 @Dao interface VirtualPackageDao {
@@ -109,6 +117,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("UPDATE virtual_messages SET status='DELIVERING', attemptCount=attemptCount+1 WHERE messageId=:messageId AND status='PENDING'") suspend fun claimPending(messageId:String): Int
     @Query("UPDATE virtual_messages SET status='CONSUMED', deliveredAt=:time, consumedAt=:time WHERE messageId=:messageId AND status='DELIVERING'") suspend fun markConsumedAfterCallback(messageId:String,time:Long): Int
     @Query("UPDATE virtual_messages SET status='PENDING' WHERE messageId=:messageId AND status='DELIVERING'") suspend fun requeueDelivering(messageId:String): Int
+    @Query("UPDATE virtual_messages SET status='PENDING' WHERE receiverPackage=:toPkg AND virtualUserId=:userId AND status='DELIVERING'") suspend fun requeueDeliveringFor(toPkg:String,userId:Int): Int
     @Query("UPDATE virtual_messages SET status='PENDING' WHERE receiverPackage=:toPkg AND virtualUserId=:userId AND status='DELIVERING' AND deliveredAt IS NULL AND createdAt < :deadline") suspend fun requeueStaleDelivering(toPkg:String,userId:Int,deadline:Long): Int
     @Query("UPDATE virtual_messages SET status='FAILED', consumedAt=:time WHERE messageId=:messageId AND status='DELIVERING'") suspend fun markFailed(messageId:String,time:Long): Int
     @Query("DELETE FROM virtual_messages WHERE receiverPackage=:toPkg AND virtualUserId=:userId") suspend fun clearHistory(toPkg:String,userId:Int)
@@ -133,6 +142,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("UPDATE virtual_runtime_sessions SET state='ERROR',launchPhase='STALE',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode='ERROR_STALE_STARTING',sanitizedError='Inicio anterior limpiado al abrir VirtualSpace. Puedes reintentar.',classLoaderState='FAILED' WHERE state='STARTING'") suspend fun markStaleStarting(now:Long)
     @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase='PROCESS_LOST',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode='STOPPED_PROCESS_LOST',sanitizedError='El proceso anterior ya no existe.' WHERE state IN ('ACTIVE','PAUSED')") suspend fun markProcessLost(now:Long)
     @Query("DELETE FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId AND sessionId != :keepSessionId") suspend fun deleteDuplicatesFor(packageName:String,userId:Int,keepSessionId:String)
+    @Query("DELETE FROM virtual_runtime_sessions WHERE sessionId=:sessionId") suspend fun deleteSession(sessionId:String)
     @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVE'") suspend fun activeCount(): Int
     @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase='STOPPED',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now WHERE state != 'STOPPED'") suspend fun stopAll(now:Long)
 }
@@ -148,7 +158,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=10, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=11, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
