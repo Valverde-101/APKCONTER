@@ -39,7 +39,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         val slotActive = slot.state == "ACTIVE_FOREGROUND" || slot.state == "ACTIVE_BACKGROUND"
         val classLoaderLoaded = session.classLoaderState == "LOADED"
         if (session.state == "STARTING" && slotActive && processAlive && heartbeatFresh && classLoaderLoaded) {
-            db.runtime().repairActive(session.sessionId, now, pid!!)
+            logLaunch("STATE_RECONCILIATION_BEGIN", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, session.state, slot.state); db.runtime().repairActive(session.sessionId, now, pid!!); logLaunch("STATE_RECONCILIATION_SUCCESS", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, session.state, "ACTIVE")
             logLaunch("STATE_RECONCILED", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, "STARTING/${slot.state}", "ACTIVE/${slot.state}")
         }
         val mode = when {
@@ -47,7 +47,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
             pid != null && processAlive && heartbeatFresh -> RuntimeOpenMode.RECOVER_SERVICE
             else -> RuntimeOpenMode.COLD_START
         }
-        return RuntimeOpenDecision(mode, session.sessionId, RuntimeSlotId.valueOf(slot.slotId), slot.taskId, processAlive, heartbeatFresh, slot.activityLastAttachedAt != null)
+        return RuntimeOpenDecision(mode, session.sessionId, RuntimeSlotId.valueOf(slot.slotId), slot.taskId, processAlive, heartbeatFresh, slot.activityAttached)
     }
 
     suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, maxActiveApps: Int = 2, now: Long = System.currentTimeMillis()): PreparedLaunch = db.withTransaction {
@@ -89,7 +89,24 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         PreparedLaunch(sessionId, attemptId, token, true, reservedSlot.slotId)
     }
 
-    suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) { RuntimeRecoveryManager(db).recover(now) }
+    suspend fun reconcileActiveSlots(now: Long = System.currentTimeMillis()) {
+        db.runtimeSlots().getAll().forEach { slot ->
+            val sid = slot.sessionId ?: return@forEach
+            val session = db.runtime().get(sid) ?: return@forEach
+            val pid = slot.hostPid
+            val activeSlot = slot.state == "ACTIVE_FOREGROUND" || slot.state == "ACTIVE_BACKGROUND"
+            val alive = pid != null && runCatching { Os.kill(pid, 0); true }.getOrDefault(false)
+            val fresh = (slot.lastHeartbeatAt ?: 0L) >= now - START_TIMEOUT_MS
+            if (activeSlot && alive && fresh) {
+                logLaunch("STATE_RECONCILIATION_BEGIN", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, session.state, slot.state)
+                if (session.currentLaunchAttemptId == slot.launchAttemptId) {
+                    db.withTransaction { db.runtime().repairActive(sid, now, pid!!) }
+                    logLaunch("STATE_RECONCILIATION_SUCCESS", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, session.state, "ACTIVE")
+                } else logLaunch("STATE_RECONCILIATION_REJECTED", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, session.currentLaunchAttemptId, slot.launchAttemptId)
+            }
+        }
+    }
+    suspend fun reconcileStartup(now: Long = System.currentTimeMillis()) { reconcileActiveSlots(now); RuntimeRecoveryManager(db).recover(now) }
 }
 
 data class WatchdogDiagnostics(val active: Boolean = false, val lastTickAt: Long = 0, val startingFound: Int = 0, val deadline: Long = 0, val lastHeartbeatAgeMs: Long? = null, val dbInstanceId: String = "unknown", val internalError: String? = null)
@@ -101,7 +118,7 @@ class RuntimeSessionController(private val repository: RuntimeSessionRepository,
     suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { val now = System.currentTimeMillis(); db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", now, "LAUNCH_CANCELLED", "Inicio cancelado por el usuario."); db.launchTokens().revokeAttempt(sessionId, it, now); db.runtimeSlots().findBySession(sessionId)?.let { slot -> db.runtimeSlots().release(slot.slotId, now) }; metrics.removeMetrics(sessionId) } }
     suspend fun watchdogTick(timeoutMs: Long = START_TIMEOUT_MS) {
         val now = System.currentTimeMillis(); val deadline = now - timeoutMs
-        val stale = db.runtime().staleStarting(deadline)
+        repository.reconcileActiveSlots(now); val stale = db.runtime().staleStarting(deadline)
         diagnostics = WatchdogDiagnostics(true, now, stale.size, deadline, stale.minOfOrNull { now - it.lastHeartbeatAt }, System.identityHashCode(db).toString(16), null)
         logLaunch("WATCHDOG_TICK", null, null, null, null, null, "deadline=$deadline rows=${stale.size}", "db=${diagnostics.dbInstanceId}")
         stale.forEach { row ->

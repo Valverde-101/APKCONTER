@@ -28,7 +28,6 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     private var isBound = false
     private var isBinding = false
     private var boundSessionId: String? = null
-    private var pendingAttach = false
     private val activityInstanceId = UUID.randomUUID().toString()
     private val handler = Handler(Looper.getMainLooper())
     private val heartbeatTick = object : Runnable { override fun run() { binder?.requestHeartbeat(); handler.postDelayed(this, 3_000) } }
@@ -63,7 +62,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
             if (content?.result?.success == true && content.content != null) render(content.content) else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
             return
         }
-        if (isBinding && sessionId == nextSessionId) { pendingAttach = true; return }
+        if (isBinding && sessionId == nextSessionId) return
         if (isBound && boundSessionId != nextSessionId) { runCatching { unbindService(connection) }; isBound = false; isBinding = false; binder = null; boundSessionId = null }
         sessionId = nextSessionId
         val openMode = intent.getStringExtra("openMode") ?: "COLD_START"
@@ -74,10 +73,18 @@ abstract class BaseRuntimeProxyActivity : Activity() {
             startService(serviceIntent)
         }
         isBinding = true
-        bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
+        try {
+            val bound = bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
+            if (!bound) { isBinding = false; renderError("RECOVER_BIND_FAILED slot=${slotId.name} sessionId=$sessionId pid=${Process.myPid()}") }
+        } catch (t: SecurityException) {
+            isBinding = false; renderError("RECOVER_BIND_FAILED slot=${slotId.name} sessionId=$sessionId pid=${Process.myPid()}: ${t.message}")
+        } catch (t: IllegalArgumentException) {
+            isBinding = false; renderError("RECOVER_BIND_FAILED slot=${slotId.name} sessionId=$sessionId pid=${Process.myPid()}: ${t.message}")
+        }
     }
 
-    private fun recordActivityAttached() { CoroutineScope(Dispatchers.IO).launch { runCatching { DatabaseProvider.get(applicationContext).runtimeSlots().markActivityAttached(slotId.name, sessionId, taskId, activityInstanceId, System.currentTimeMillis(), Process.myPid()) } } }
+    private fun recordActivityAttached() { if (sessionId.isNotBlank()) CoroutineScope(Dispatchers.IO).launch { runCatching { DatabaseProvider.get(applicationContext).runtimeSlots().markActivityAttached(slotId.name, sessionId, taskId, activityInstanceId, System.currentTimeMillis(), Process.myPid()) } } }
+    private fun recordActivityDetached() { if (sessionId.isNotBlank()) CoroutineScope(Dispatchers.IO).launch { runCatching { DatabaseProvider.get(applicationContext).runtimeSlots().markActivityDetached(slotId.name, sessionId, activityInstanceId) } } }
     private fun render(content: VirtualContent) { container.removeAllViews(); addContent(container, content) }
     private fun addContent(parent: LinearLayout, content: VirtualContent) { when (content) { is VirtualContent.Text -> parent.addView(TextView(this).apply { text = content.text; textSize = 16f }); is VirtualContent.Button -> parent.addView(Button(this).apply { text = content.text; setOnClickListener { runAction(content.actionId) } }); is VirtualContent.Column -> content.children.forEach { addContent(parent, it) }; is VirtualContent.ListContent -> { parent.addView(TextView(this).apply { text = content.title; textSize = 18f }); content.rows.forEach { parent.addView(TextView(this).apply { text = "• $it" }) } } } }
     private fun runAction(actionId: String) { val result = binder?.dispatchAction(sessionId, actionId); if (result?.result?.success == true && result.content != null) render(result.content) else renderError(result?.result?.sanitizedMessage ?: "RUNTIME_ACTION_FAILED") }
@@ -85,6 +92,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     override fun onStart() { super.onStart(); recordActivityAttached(); binder?.bringToForeground(sessionId) }
     override fun onResume() { super.onResume(); recordActivityAttached(); binder?.resumeSession(sessionId) }
     override fun onPause() { binder?.detachUi(sessionId); super.onPause() }
+    override fun onStop() { recordActivityDetached(); super.onStop() }
     override fun onDestroy() { handler.removeCallbacks(heartbeatTick); if (isBound || isBinding) runCatching { unbindService(connection) }; isBound = false; isBinding = false; boundSessionId = null; binder = null; super.onDestroy() }
 }
 
