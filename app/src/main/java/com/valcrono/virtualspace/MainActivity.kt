@@ -236,6 +236,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val snapshot by resourceTracker.snapshot.collectAsState()
         var packages by remember { mutableStateOf<List<VirtualPackageEntity>>(emptyList()) }
         var sessions by remember { mutableStateOf<List<VirtualRuntimeSessionEntity>>(emptyList()) }
+        var runtimeSlots by remember { mutableStateOf<List<RuntimeSlotEntity>>(emptyList()) }
         val snackbarHostState = remember { SnackbarHostState() }
         val widthClass = calculateWindowSizeClass(this).widthSizeClass
         val wide = widthClass != WindowWidthSizeClass.Compact
@@ -249,6 +250,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 runtimeMetrics.replaceMetricsForSessions(rows)
             }
         }
+        LaunchedEffect(Unit) { repository.db.runtimeSlots().observeAll().collectLatest { runtimeSlots = it } }
         LaunchedEffect(Unit) {
             lifecycleScope.launch {
                 repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -331,7 +333,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Box(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                         when (destination) {
                             Destination.HOME -> HomeScreen(packages, snapshot, settings, sessions)
-                            Destination.APPS -> AppsScreen(packages, sessions)
+                            Destination.APPS -> AppsScreen(packages, sessions, runtimeSlots)
                             Destination.FILES -> GlobalFileDestination(packages, settings)
                             Destination.PROCESSES -> ProcessScreen(snapshot, packages, settings, sessions)
                             Destination.SETTINGS -> SettingsScreen(settings, packages)
@@ -383,7 +385,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     @Composable
-    private fun AppsScreen(packages: List<VirtualPackageEntity>, sessions: List<VirtualRuntimeSessionEntity>) {
+    private fun AppsScreen(packages: List<VirtualPackageEntity>, sessions: List<VirtualRuntimeSessionEntity>, slots: List<RuntimeSlotEntity>) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -392,12 +394,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { destination = Destination.PROCESSES }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Procesos") }
                 }
             }
-            items(packages) { pkg -> AppCard(pkg, sessions.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }) }
+            items(packages) { pkg -> val session = sessions.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }; AppCard(pkg, RuntimeAppUiState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }, effectiveRuntimeState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }))) }
         }
     }
 
     @Composable
-    private fun AppCard(pkg: VirtualPackageEntity, session: VirtualRuntimeSessionEntity?) {
+    private fun AppCard(pkg: VirtualPackageEntity, runtimeUiState: RuntimeAppUiState) {
+        val session = runtimeUiState.session
+        val slot = runtimeUiState.slot
         var menuExpanded by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         val snapshot by resourceTracker.snapshot.collectAsState()
@@ -415,7 +419,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Estado: ${sessionStateLabel(state)}")
-                    Text(runtimeSlotLabel(session))
+                    Text(runtimeSlotLabel(slot))
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1103,6 +1107,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     private fun openVirtual(pkg: VirtualPackageEntity) {
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
+            val decision = withContext(Dispatchers.IO) { runtimeSessions.resolveOpenDecision(pkg.packageName, pkg.virtualUserId) }
+            if (decision?.mode == RuntimeOpenMode.WARM_RESUME) { bringExistingTaskToFront(pkg, decision); return@launch }
             val missing = withContext(Dispatchers.IO) { missingRuntimePermissions(pkg) }
             if (missing.isNotEmpty()) {
                 pendingLaunchPackage = pkg
@@ -1113,6 +1119,17 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
     }
 
+
+    private fun effectiveRuntimeState(session: VirtualRuntimeSessionEntity?, slot: RuntimeSlotEntity?): RuntimeEffectiveState = when {
+        slot?.state == "ACTIVE_FOREGROUND" -> RuntimeEffectiveState.ACTIVE_FOREGROUND
+        slot?.state == "ACTIVE_BACKGROUND" -> RuntimeEffectiveState.ACTIVE_BACKGROUND
+        session?.state == "STARTING" -> RuntimeEffectiveState.STARTING
+        session?.state == "ACTIVE" -> RuntimeEffectiveState.ACTIVE_BACKGROUND
+        session?.state == "PAUSED" || slot?.state == "PAUSED_BY_USER" -> RuntimeEffectiveState.PAUSED
+        session?.state == "ERROR" || slot?.state == "ERROR" || slot?.state == "CRASHED" -> RuntimeEffectiveState.ERROR
+        else -> RuntimeEffectiveState.STOPPED
+    }
+
     private fun launchButtonLabel(state: String): String = when (state) {
         "STARTING" -> "Abriendo…"
         "ACTIVE", "ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND" -> "Volver a la app"
@@ -1121,9 +1138,15 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         else -> "Abrir"
     }
 
-    private fun runtimeSlotLabel(session: VirtualRuntimeSessionEntity?): String {
-        val slot = session?.sessionId?.let { runBlocking { repository.db.runtimeSlots().findBySession(it) } }
-        return if (slot != null) "Slot: ${slot.slotId} · PID: ${slot.hostPid ?: "—"} · PSS: ${formatBytes(slot.pssBytes ?: 0)}" else "RAM actual: 0 MB · Sin proceso activo"
+    private fun runtimeSlotLabel(slot: RuntimeSlotEntity?): String = if (slot != null) "Slot: ${slot.slotId} · PID: ${slot.hostPid ?: "—"} · PSS: ${formatBytes(slot.pssBytes ?: 0)}" else "RAM actual: 0 MB · Sin proceso activo"
+
+    private fun bringExistingTaskToFront(pkg: VirtualPackageEntity, decision: RuntimeOpenDecision) {
+        val taskId = decision.taskId
+        if (taskId != null) {
+            runCatching { (getSystemService(ACTIVITY_SERVICE) as ActivityManager).moveTaskToFront(taskId, 0); importStatus = "Volviendo a ${pkg.label}"; return }
+        }
+        startActivity(Intent(this@MainActivity, proxyActivityFor(decision.slotId)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("openMode", "WARM_RESUME").putExtra("sessionId", decision.sessionId).putExtra("slotId", decision.slotId.name))
+        importStatus = "Volviendo a ${pkg.label}"
     }
 
     private fun bringRuntimeToForeground(pkg: VirtualPackageEntity, prepared: PreparedLaunch, activity: String) {
@@ -1131,7 +1154,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         if (slot == null) { importStatus = "PROCESS_LOST: no se encontró slot para ${pkg.label}"; return }
         startActivity(
             Intent(this@MainActivity, proxyActivityFor(slot))
-                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra("virtualUserId", pkg.virtualUserId)
                 .putExtra("virtualPackageName", pkg.packageName)
                 .putExtra("virtualActivityName", activity)
