@@ -297,7 +297,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                         title = {
                             Column {
                                 Text("Valcrono VirtualSpace", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Estado general: Normal", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(generalRuntimeStatus(sessions, runtimeSlots), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         },
                         actions = { TextButton(onClick = { destination = Destination.SETTINGS }) { Text("Menú") } },
@@ -513,7 +513,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             item { SettingsSection("Permisos") { PermissionsScreen() } }
             item { SettingsSection("Copias de seguridad") { SettingSwitch("Incluir APK en exportación", settings.includeApkInExport) { scope.launch { settingsStore.setBool("include_apk_export", it) } }; SettingSwitch("Incluir caché", settings.includeCacheInExport) { scope.launch { settingsStore.setBool("include_cache_export", it) } }; SettingSwitch("Incluir logs", settings.includeLogsInExport) { scope.launch { settingsStore.setBool("include_logs_export", it) } }; SettingSwitch("Verificación SHA-256", settings.backupSha256) { scope.launch { settingsStore.setBool("backup_sha256", it) } }; SettingSwitch("Backup antes de borrar", settings.backupBeforeDelete) { scope.launch { settingsStore.setBool("backup_before_delete", it) } } } }
             item { SettingsSection("Seguridad") { settingsText("Bloqueo mediante PIN: No implementada", "Desbloqueo biométrico: No implementada", "Impedir capturas en pantallas sensibles: ${settings.flagSecureEnabled}", "Registro de acciones administrativas: ${settings.adminActionLog}") } }
-            item { SettingsSection("Diagnóstico") { deviceDiagnostics(packages).forEach { Text("${it.first}: ${it.second}") }; val wd = runtimeController.diagnostics; Text("Watchdog activo: ${if (wd.active) "Sí" else "No"}"); Text("Último tick: ${if (wd.lastTickAt > 0) date(wd.lastTickAt) else "—"}"); Text("Sesiones STARTING encontradas: ${wd.startingFound}"); Text("Deadline actual: ${wd.deadline}"); Text("Edad del último heartbeat: ${wd.lastHeartbeatAgeMs?.let(::formatDuration) ?: "—"}"); Text("DB instance ID: ${wd.dbInstanceId}"); Text("Host instance ID: ${RuntimeHostRegistry.hostInstanceId}"); Text("Runtime generation: ${RuntimeHostRegistry.runtimeGeneration}"); Text("Runtime state: ${RuntimeHostRegistry.runtimeState}"); Text("Host PID: ${RuntimeHostRegistry.hostProcessPid}"); Text("Host start elapsed: ${RuntimeHostRegistry.hostStartedElapsedRealtime}"); Text("Última recuperación: ${if (RuntimeHostRegistry.lastRecoveryCompletedAt > 0) date(RuntimeHostRegistry.lastRecoveryCompletedAt) else "—"}"); Text("Duración de recuperación: ${formatDuration(RuntimeHostRegistry.lastRecoveryDurationMs)}") } }
+            item { SettingsSection("Diagnóstico") { deviceDiagnostics(packages).forEach { Text("${it.first}: ${it.second}") }; val wd = runtimeController.diagnostics; Text("Watchdog activo: ${if (wd.active) "Sí" else "No"}"); Text("Último tick: ${if (wd.lastTickAt > 0) date(wd.lastTickAt) else "—"}"); Text("Sesiones STARTING encontradas: ${wd.startingFound}"); Text("Deadline actual: ${wd.deadline}"); Text("Edad del último heartbeat: ${wd.lastHeartbeatAgeMs?.let(::formatDuration) ?: "—"}"); Text("DB instance ID: ${wd.dbInstanceId}"); Text("Host instance ID: ${RuntimeHostRegistry.hostInstanceId}"); Text("Runtime generation: ${RuntimeHostRegistry.runtimeGeneration}"); Text("Runtime state: ${RuntimeHostRegistry.runtimeState}"); Text("Host PID: ${RuntimeHostRegistry.hostProcessPid}"); Text("Host start elapsed: ${RuntimeHostRegistry.hostStartedElapsedRealtime}"); Text("Última recuperación: ${if (RuntimeHostRegistry.lastRecoveryCompletedAt > 0) date(RuntimeHostRegistry.lastRecoveryCompletedAt) else "—"}"); Text("Duración de recuperación: ${formatDuration(RuntimeHostRegistry.lastRecoveryDurationMs)}"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { RuntimeSlotId.entries.forEach { sid -> TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Historial ${sid.name}", SlotMutationJournal.formatted(sid.name))) }) { Text("Copiar historial del slot ${sid.name}") } } } } }
             item { SettingsSection("Desarrollador") { SettingSwitch("Modo desarrollador", settings.developerMode) { scope.launch { settingsStore.setDeveloperMode(it) } }; Text("Nivel de logs"); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Error", "Información", "Depuración").forEach { level -> FilterChip(selected = settings.logLevel == level, onClick = { scope.launch { settingsStore.setLogLevel(level) } }, label = { Text(level) }) } }; SettingSwitch("Mostrar stack traces", settings.showStackTraces) { scope.launch { settingsStore.setBool("show_stack_traces", it) } } } }
             item { SettingsSection("Acerca de") { settingsText("Nombre: Valcrono VirtualSpace", "Versión: ${BuildConfig.VERSION_NAME}", "Código de versión: ${BuildConfig.VERSION_CODE}", "Commit del build: ${BuildConfig.GIT_COMMIT}", "Fecha de compilación: ${BuildConfig.BUILD_DATE}", "Tipo de build: ${BuildConfig.BUILD_TYPE}", "SDK objetivo: 35", "Estado del runtime: PROTOTIPO FUNCIONAL PARA APPS COOPERATIVAS") } }
             item {
@@ -1206,6 +1206,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 .putExtra("sessionId", prepared.sessionId)
                 .putExtra("launchAttemptId", prepared.launchAttemptId)
                 .putExtra("launchToken", prepared.launchToken)
+                .putExtra("reservationToken", prepared.reservationToken)
+                .putExtra("runtimeGeneration", prepared.runtimeGeneration)
+                .putExtra("slotEpoch", prepared.slotEpoch)
                 .putExtra("slotId", slot.name),
         )
         importStatus = "Volviendo a ${pkg.label}"
@@ -1218,7 +1221,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity, settingsStore.settings.first().maxActiveApps) }
             if (!prepared.shouldStartActivity) { bringRuntimeToForeground(pkg, prepared, activity); return@launch }
             logLaunch("INTENT_SENT", prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, pkg.packageName, pkg.virtualUserId, "STARTING", "STARTING")
-            startService(Intent(this@MainActivity, serviceFor(prepared.slotId ?: RuntimeSlotId.VAPP0)).putExtra("runtimeLaunchRequest", RuntimeLaunchRequest(pkg.virtualUserId, pkg.packageName, activity, prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name)))
+            startService(Intent(this@MainActivity, serviceFor(prepared.slotId ?: RuntimeSlotId.VAPP0)).putExtra("runtimeLaunchRequest", RuntimeLaunchRequest(pkg.virtualUserId, pkg.packageName, activity, prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name, prepared.reservationToken, prepared.runtimeGeneration, prepared.slotEpoch)))
             startActivity(
                 Intent(this@MainActivity, proxyActivityFor(prepared.slotId ?: RuntimeSlotId.VAPP0))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -1228,6 +1231,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     .putExtra("sessionId", prepared.sessionId)
                     .putExtra("launchAttemptId", prepared.launchAttemptId)
                     .putExtra("launchToken", prepared.launchToken)
+                    .putExtra("reservationToken", prepared.reservationToken)
+                    .putExtra("runtimeGeneration", prepared.runtimeGeneration)
+                    .putExtra("slotEpoch", prepared.slotEpoch)
                     .putExtra("slotId", prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name),
             )
         }
@@ -1547,4 +1553,12 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         "Diagnóstico",
         "Instalar fuera de VirtualSpace",
     )
+}
+
+private fun generalRuntimeStatus(sessions: List<VirtualRuntimeSessionEntity>, slots: List<RuntimeSlotEntity>): String {
+    val degraded = sessions.any { it.state == "ERROR" || it.errorCode == "START_FAILED" || it.sanitizedError?.contains("ACTIVE_ACK_SLOT_REJECTED") == true || it.sanitizedError?.contains("ACTIVE_ACK_REJECTED") == true } ||
+        slots.any { (it.state == "FREE" && it.errorCode != null) || (it.state != "FREE" && it.sessionId == null) || (it.state in setOf("RESERVED", "BINDING", "STARTING", "WAITING_ACTIVE_ACK") && it.startupDeadlineElapsed == null) } ||
+        sessions.any { it.state == "STARTING" && slots.none { slot -> slot.sessionId == it.sessionId } } ||
+        sessions.any { it.state != "STARTING" && it.classLoaderState == "PENDING" && it.stoppedAt != null }
+    return if (degraded) "Estado general: Degradado" else "Estado general: Normal"
 }
