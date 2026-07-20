@@ -1,11 +1,14 @@
 package com.valcrono.virtualspace
 
 import java.io.File
-import kotlin.test.Test
-import kotlin.test.assertTrue
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class HostRestartRecoveryContractTest {
-    private fun src(path: String) = File(path).readText()
+    private fun src(path: String): String {
+        val candidates = listOf(File(path), File("..", path), File(System.getProperty("user.dir"), path), File(System.getProperty("user.dir")).parentFile?.let { File(it, path) }).filterNotNull()
+        return candidates.firstOrNull { it.isFile }?.readText() ?: error("Source file not found: $path")
+    }
 
     @Test fun runtimeHasRecoveringBarrierBeforeLaunchAndWatchdog() {
         val repo = src("src/main/java/com/valcrono/virtualspace/RuntimeSessionRepository.kt")
