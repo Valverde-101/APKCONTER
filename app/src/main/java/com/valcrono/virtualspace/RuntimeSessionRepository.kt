@@ -11,7 +11,7 @@ import java.util.UUID
 private const val TOKEN_TTL_MS = 5 * 60 * 1000L
 const val START_TIMEOUT_MS: Long = 30_000L
 
-data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean, val slotId: RuntimeSlotId?)
+data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean, val slotId: RuntimeSlotId?, val reservationToken: String, val runtimeGeneration: Long, val slotEpoch: Long)
 
 enum class RuntimeOpenMode { COLD_START, WARM_RESUME, RECOVER_SERVICE }
 enum class RuntimeEffectiveState { STOPPED, STARTING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, PAUSED, ERROR }
@@ -73,6 +73,9 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
                 launchToken = token,
                 shouldStartActivity = false,
                 slotId = db.runtimeSlots().findBySession(sessionId)?.let { RuntimeSlotId.valueOf(it.slotId) },
+                reservationToken = db.runtimeSlots().findBySession(sessionId)?.reservationToken.orEmpty(),
+                runtimeGeneration = db.runtimeSlots().findBySession(sessionId)?.runtimeGeneration ?: RuntimeHostRegistry.runtimeGeneration,
+                slotEpoch = db.runtimeSlots().findBySession(sessionId)?.slotEpoch ?: 0L,
             )
         }
         val row = (reusable ?: VirtualRuntimeSessionEntity(sessionId, pkg.packageName, pkg.virtualUserId, "STOPPED", null, now, null, now, now, null, Process.myPid(), activity, "PENDING", "NEW", null, null)).copy(
@@ -94,7 +97,8 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         logLaunch("SESSION_STARTING_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, row.state)
         db.launchTokens().upsert(VirtualLaunchTokenEntity(token, sessionId, attemptId, pkg.virtualUserId, pkg.packageName, activity, now, now + TOKEN_TTL_MS, null))
         logLaunch("TOKEN_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, null, null)
-        PreparedLaunch(sessionId, attemptId, token, true, reservedSlot.slotId)
+        val reservedEntity = db.runtimeSlots().get(reservedSlot.slotId.name) ?: error("Reserva perdida después de SLOT_RESERVED")
+        PreparedLaunch(sessionId, attemptId, token, true, reservedSlot.slotId, reservedEntity.reservationToken.orEmpty(), reservedEntity.runtimeGeneration ?: RuntimeHostRegistry.runtimeGeneration, reservedEntity.slotEpoch)
     }
     }
 
@@ -123,8 +127,8 @@ data class WatchdogDiagnostics(val active: Boolean = false, val lastTickAt: Long
 class RuntimeSessionController(private val repository: RuntimeSessionRepository, private val db: ValcronoDatabase, private val metrics: RuntimeMetricsRepository) {
     @Volatile var diagnostics: WatchdogDiagnostics = WatchdogDiagnostics(dbInstanceId = System.identityHashCode(db).toString(16)); private set
     suspend fun prepareLaunch(pkg: VirtualPackageEntity, activity: String, maxActiveApps: Int = 2): PreparedLaunch = repository.prepareLaunch(pkg, activity, maxActiveApps)
-    suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { row -> val now = System.currentTimeMillis(); db.runtimeSlots().findBySession(row.sessionId)?.let { RuntimeSlotReclaimer(db).reclaimSlot(it.slotId, row.sessionId, RuntimeReclaimReason.STOPPED, now) } ?: row.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(row.sessionId, a, "STOPPED", "STOPPED", now, null, null); db.launchTokens().revokeAttempt(row.sessionId, a, now) }; metrics.removeMetrics(row.sessionId) } }
-    suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { val now = System.currentTimeMillis(); db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", now, "LAUNCH_CANCELLED", "Inicio cancelado por el usuario."); db.launchTokens().revokeAttempt(sessionId, it, now); db.runtimeSlots().findBySession(sessionId)?.let { slot -> db.runtimeSlots().release(slot.slotId, now) }; metrics.removeMetrics(sessionId) } }
+    suspend fun stop(packageName: String, userId: Int) { db.runtime().forPackage(packageName, userId)?.let { row -> val now = System.currentTimeMillis(); db.runtimeSlots().findBySession(row.sessionId)?.let { RuntimeSlotReclaimer(db).reclaimSlot(it.slotId, row.sessionId, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.STOPPED, now) } ?: row.currentLaunchAttemptId?.let { a -> db.runtime().compareAndSetState(row.sessionId, a, "STOPPED", "STOPPED", now, null, null); db.launchTokens().revokeAttempt(row.sessionId, a, now) }; metrics.removeMetrics(row.sessionId) } }
+    suspend fun cancelStarting(sessionId: String) { db.runtime().get(sessionId)?.currentLaunchAttemptId?.let { val now = System.currentTimeMillis(); db.runtime().compareAndSetState(sessionId, it, "ERROR", "CANCELLED", now, "LAUNCH_CANCELLED", "Inicio cancelado por el usuario."); db.launchTokens().revokeAttempt(sessionId, it, now); db.runtimeSlots().findBySession(sessionId)?.let { slot -> RuntimeSlotReclaimer(db).reclaimSlot(slot.slotId, sessionId, slot.launchAttemptId, slot.reservationToken, RuntimeReclaimReason.CANCELLED, now) }; metrics.removeMetrics(sessionId) } }
     suspend fun watchdogTick(timeoutMs: Long = START_TIMEOUT_MS) {
         RuntimeHostRegistry.awaitReady()
         val now = System.currentTimeMillis(); val deadline = now - timeoutMs
@@ -135,7 +139,7 @@ class RuntimeSessionController(private val repository: RuntimeSessionRepository,
             val attempt = row.currentLaunchAttemptId ?: return@forEach
             logLaunch("WATCHDOG_CHECK", row.sessionId, attempt, null, row.packageName, row.virtualUserId, row.state, row.state)
             val changed = db.runtime().timeoutLaunch(row.sessionId, attempt, deadline, now)
-            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); db.runtimeSlots().findBySession(row.sessionId)?.let { db.runtimeSlots().release(it.slotId, now) }; metrics.removeMetrics(row.sessionId) }
+            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); db.runtimeSlots().findBySession(row.sessionId)?.let { RuntimeSlotReclaimer(db).reclaimSlot(it.slotId, row.sessionId, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.STALE_HEARTBEAT, now) }; metrics.removeMetrics(row.sessionId) }
         }
         db.launchTokens().cleanup(now, now - 24 * 60 * 60 * 1000L)
     }

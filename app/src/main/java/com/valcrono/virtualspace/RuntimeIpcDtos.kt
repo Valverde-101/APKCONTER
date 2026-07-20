@@ -11,6 +11,9 @@ data class RuntimeLaunchRequest(
     val launchAttemptId: String,
     val launchToken: String,
     val slotId: String,
+    val reservationToken: String,
+    val runtimeGeneration: Long,
+    val slotEpoch: Long,
 ) : Parcelable {
     constructor(parcel: Parcel) : this(
         parcel.readInt(),
@@ -20,10 +23,14 @@ data class RuntimeLaunchRequest(
         parcel.readString().orEmpty(),
         parcel.readString().orEmpty(),
         parcel.readString().orEmpty(),
+        parcel.readString().orEmpty(),
+        parcel.readLong(),
+        parcel.readLong(),
     )
     override fun writeToParcel(parcel: Parcel, flags: Int) {
         parcel.writeInt(virtualUserId); parcel.writeString(virtualPackageName); parcel.writeString(virtualActivityName)
         parcel.writeString(sessionId); parcel.writeString(launchAttemptId); parcel.writeString(launchToken); parcel.writeString(slotId)
+        parcel.writeString(reservationToken); parcel.writeLong(runtimeGeneration); parcel.writeLong(slotEpoch)
     }
     override fun describeContents(): Int = 0
     companion object {
