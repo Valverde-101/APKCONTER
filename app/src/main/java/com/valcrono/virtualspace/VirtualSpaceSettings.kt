@@ -12,6 +12,7 @@ private val Context.virtualSpaceDataStore by preferencesDataStore("virtualspace_
 
 data class VirtualSpaceSettings(
     val performanceProfile: MemoryProfile = MemoryProfile.AUTOMATIC,
+    val keepVirtualAppsActive: Boolean = false,
     val maxActiveApps: Int = 2,
     val maxPausedSessions: Int = 1,
     val cacheBudgetMb: Int = 64,
@@ -71,6 +72,7 @@ class VirtualSpaceSettingsStore(private val context: Context) {
     val settings: Flow<VirtualSpaceSettings> = context.virtualSpaceDataStore.data.map { prefs ->
         VirtualSpaceSettings(
             performanceProfile = prefs[Keys.performanceProfile]?.let { runCatching { MemoryProfile.valueOf(it) }.getOrNull() } ?: MemoryProfile.AUTOMATIC,
+            keepVirtualAppsActive = prefs[Keys.keepVirtualAppsActive] ?: false,
             cardDensity = prefs[Keys.cardDensity] ?: "Normal",
             theme = prefs[Keys.theme] ?: "Sistema",
             developerMode = prefs[Keys.developerMode] ?: false,
@@ -113,6 +115,7 @@ class VirtualSpaceSettingsStore(private val context: Context) {
 
     private object Keys {
         val performanceProfile = stringPreferencesKey("performance_profile")
+        val keepVirtualAppsActive = booleanPreferencesKey("keep_virtual_apps_active")
         val cardDensity = stringPreferencesKey("card_density")
         val theme = stringPreferencesKey("theme")
         val developerMode = booleanPreferencesKey("developer_mode")

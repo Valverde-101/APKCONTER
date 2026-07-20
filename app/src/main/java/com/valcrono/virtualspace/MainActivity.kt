@@ -485,7 +485,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                             )
                         }
                     }
-                    Text("El límite seleccionado es un objetivo de uso administrado por VirtualSpace. Android puede finalizar procesos cuando necesite memoria.")
+                    Text("La política usa ActivityManager.MemoryInfo: NORMAL si lowMemory=false y availMem > threshold*2; PSS solo es diagnóstico.")
+                    SettingSwitch("Mantener aplicaciones virtuales activas", settings.keepVirtualAppsActive) { enabled ->
+                        scope.launch {
+                            settingsStore.setBool("keep_virtual_apps_active", enabled)
+                            if (enabled) SessionKeeperService.startFromUserAction(this@MainActivity)?.let { importStatus = it } else SessionKeeperService.stop(this@MainActivity)
+                        }
+                    }
+                    Text("Reduce la probabilidad de que Android cierre A o B mientras están en segundo plano. Mostrará una notificación persistente.")
                 }
             }
             item { SettingsSection("Aplicaciones virtuales") {
@@ -1373,6 +1380,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             isLowRamDevice = activityManager.isLowRamDevice,
             processPssBytes = snapshot.hostPssBytes,
             activeSessions = snapshot.activeSessions,
+            systemThresholdBytes = snapshot.memoryThresholdBytes,
+            systemLowMemory = snapshot.systemLowMemory,
         )
         sessionManager.enforce(settings.performanceProfile, inputs)
         importStatus = sessionManager.actions().value.joinToString(" · ")
@@ -1402,7 +1411,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         sessionManager.onLowMemory()
         if (sessionManager.actions().value.size > before) {
             recentMemoryAlertAt = System.currentTimeMillis()
-            recentMemoryAlertText = "Memoria baja: sesiones pausadas detenidas"
+            recentMemoryAlertText = "Memoria baja: trim seguro; sesiones activas conservadas"
         }
     }
 
@@ -1498,7 +1507,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     private fun runtimeModeLabel(pkg: VirtualPackageEntity): String = pkg.runtimeMode
 
-    private fun trimPolicyLabel(name: String): String = when (name) { "STOP_PAUSED" -> "Sesiones pausadas cerradas por presión de memoria"; else -> name.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() } }
+    private fun trimPolicyLabel(name: String): String = name.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() }
 
     private fun boolLabel(value: Boolean): String = if (value) "Activado" else "Desactivado"
 
@@ -1507,7 +1516,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     private fun sessionStateLabel(state: SessionState): String = when (state) { SessionState.STOPPED -> "Detenida"; SessionState.STARTING -> "Iniciando"; SessionState.ACTIVE -> "Activa"; SessionState.PAUSED -> "Pausada"; SessionState.STOPPING -> "Deteniendo"; SessionState.ERROR -> "Error al iniciar"; SessionState.SAVING -> "Guardando" }
 
     private fun MemoryProfile.displayName(): String = when (this) {
-        MemoryProfile.AUTOMATIC -> "Automático"
+        MemoryProfile.AUTOMATIC -> "Automática recomendada"
+        MemoryProfile.MAXIMUM_PERSISTENCE -> "Máxima permanencia"
+        MemoryProfile.CONSERVATIVE -> "Conservadora"
         MemoryProfile.LOW_POWER -> "Bajo consumo"
         MemoryProfile.BALANCED -> "Equilibrado"
         MemoryProfile.HIGH_PERFORMANCE -> "Alto rendimiento"

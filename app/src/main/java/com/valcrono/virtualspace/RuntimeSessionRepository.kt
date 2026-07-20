@@ -139,7 +139,7 @@ class RuntimeSessionController(private val repository: RuntimeSessionRepository,
             val attempt = row.currentLaunchAttemptId ?: return@forEach
             logLaunch("WATCHDOG_CHECK", row.sessionId, attempt, null, row.packageName, row.virtualUserId, row.state, row.state)
             val changed = db.runtime().timeoutLaunch(row.sessionId, attempt, deadline, now)
-            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); db.runtimeSlots().findBySession(row.sessionId)?.let { RuntimeSlotReclaimer(db).reclaimSlot(it.slotId, row.sessionId, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.STALE_HEARTBEAT, now) }; metrics.removeMetrics(row.sessionId) }
+            if (changed > 0) { logLaunch("WATCHDOG_TIMEOUT", row.sessionId, attempt, null, row.packageName, row.virtualUserId, "STARTING", "ERROR"); db.launchTokens().revokeAttempt(row.sessionId, attempt, now); db.runtimeSlots().findBySession(row.sessionId)?.let { RuntimeSlotReclaimer(db).reclaimSlot(it.slotId, row.sessionId, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.STARTUP_TIMEOUT, now) }; metrics.removeMetrics(row.sessionId) }
         }
         db.launchTokens().cleanup(now, now - 24 * 60 * 60 * 1000L)
     }
