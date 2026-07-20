@@ -1556,8 +1556,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 }
 
 private fun generalRuntimeStatus(sessions: List<VirtualRuntimeSessionEntity>, slots: List<RuntimeSlotEntity>): String {
-    val degraded = sessions.any { it.state == "ERROR" || it.errorCode == "START_FAILED" || it.sanitizedError?.contains("ACTIVE_ACK_SLOT_REJECTED") == true || it.sanitizedError?.contains("ACTIVE_ACK_REJECTED") == true } ||
-        slots.any { (it.state == "FREE" && it.errorCode != null) || (it.state != "FREE" && it.sessionId == null) || (it.state in setOf("RESERVED", "BINDING", "STARTING", "WAITING_ACTIVE_ACK") && it.startupDeadlineElapsed == null) } ||
+    val degraded = sessions.any { (it.state == "ERROR" && !it.hasReachedActiveAck) || it.errorCode == "START_FAILED" || it.sanitizedError?.contains("ACTIVE_ACK_SLOT_REJECTED") == true || it.sanitizedError?.contains("ACTIVE_ACK_REJECTED") == true } ||
+        slots.any { (it.state == "FREE" && it.errorCode != null) || (it.state != "FREE" && it.sessionId == null) || (it.state in setOf("RESERVED", "BINDING", "STARTING", "WAITING_ACTIVE_ACK") && it.startupDeadlineElapsed == null) || (it.state == "OCCUPIED" && sessions.find { s -> s.sessionId == it.sessionId }?.classLoaderState != "LOADED") } ||
         sessions.any { it.state == "STARTING" && slots.none { slot -> slot.sessionId == it.sessionId } } ||
         sessions.any { it.state != "STARTING" && it.classLoaderState == "PENDING" && it.stoppedAt != null }
     return if (degraded) "Estado general: Degradado" else "Estado general: Normal"

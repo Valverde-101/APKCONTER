@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).enableMultiInstanceInvalidation().build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).enableMultiInstanceInvalidation().build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -179,5 +179,20 @@ val MIGRATION_11_12 = object : Migration(11, 12) {
         db.execSQL("ALTER TABLE runtime_slots ADD COLUMN lastMutationCaller TEXT")
         db.execSQL("ALTER TABLE runtime_slots ADD COLUMN lastMutationElapsed INTEGER")
         db.execSQL("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, reservationToken=NULL, runtimeGeneration=NULL, reservedAtElapsed=NULL, startupDeadlineElapsed=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=strftime('%s','now')*1000, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason='MIGRATION_11_12', lastReclaimAt=strftime('%s','now')*1000, lastMutationReason='SLOT_NORMALIZED_FREE', lastMutationCaller='MIGRATION_11_12', lastMutationElapsed=0 WHERE state='FREE' OR sessionId IS NULL OR packageName IS NULL")
+    }
+}
+
+
+val MIGRATION_12_13 = object : Migration(12, 13) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN hasReachedActiveAck INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN firstActiveAtElapsed INTEGER")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN lastActiveAtElapsed INTEGER")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN lastRuntimeExitReason TEXT")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN processExitDetectedBy TEXT")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN lastHeartbeatSequence INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE virtual_runtime_sessions ADD COLUMN processStartElapsedRealtime INTEGER")
+        db.execSQL("UPDATE virtual_runtime_sessions SET hasReachedActiveAck=1, classLoaderState='LOADED' WHERE state IN ('ACTIVE','PAUSED') OR classLoaderState='LOADED'")
+        db.execSQL("UPDATE virtual_runtime_sessions SET state='STOPPED', errorCode=NULL, sanitizedError=NULL, lastRuntimeExitReason=COALESCE(errorCode, launchPhase), processExitDetectedBy='HOST_RECOVERY_FAILED' WHERE hasReachedActiveAck=1 AND state='ERROR'")
     }
 }

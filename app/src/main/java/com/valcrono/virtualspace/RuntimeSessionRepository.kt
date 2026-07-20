@@ -42,7 +42,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         val slotActive = slot.state == "ACTIVE_FOREGROUND" || slot.state == "ACTIVE_BACKGROUND"
         val classLoaderLoaded = session.classLoaderState == "LOADED"
         if (session.state == "STARTING" && slotActive && processAlive && heartbeatFresh && classLoaderLoaded) {
-            logLaunch("STATE_RECONCILIATION_BEGIN", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, session.state, slot.state); db.runtime().repairActive(session.sessionId, now, pid!!); logLaunch("STATE_RECONCILIATION_SUCCESS", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, session.state, "ACTIVE")
+            logLaunch("STATE_RECONCILIATION_BEGIN", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, session.state, slot.state); db.runtime().repairActive(session.sessionId, now, SystemClock.elapsedRealtime(), pid!!); logLaunch("STATE_RECONCILIATION_SUCCESS", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, session.state, "ACTIVE")
             logLaunch("STATE_RECONCILED", session.sessionId, session.currentLaunchAttemptId, null, packageName, virtualUserId, "STARTING/${slot.state}", "ACTIVE/${slot.state}")
         }
         val mode = when {
@@ -113,7 +113,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
             if (activeSlot && alive && fresh) {
                 logLaunch("STATE_RECONCILIATION_BEGIN", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, session.state, slot.state)
                 if (session.currentLaunchAttemptId == slot.launchAttemptId) {
-                    db.withTransaction { db.runtime().repairActive(sid, now, pid!!) }
+                    db.withTransaction { db.runtime().repairActive(sid, now, SystemClock.elapsedRealtime(), pid!!) }
                     logLaunch("STATE_RECONCILIATION_SUCCESS", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, session.state, "ACTIVE")
                 } else logLaunch("STATE_RECONCILIATION_REJECTED", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, session.currentLaunchAttemptId, slot.launchAttemptId)
             }
