@@ -3,6 +3,7 @@ package com.valcrono.virtualspace
 import android.app.Activity
 import android.app.Service
 import android.content.Intent
+import android.content.ComponentCallbacks2
 import android.os.Binder
 import android.os.Debug
 import android.os.IBinder
@@ -27,9 +28,10 @@ enum class RuntimeSlotState { FREE, RESERVED, BINDING, STARTING, WAITING_ACTIVE_
 enum class RuntimeUiLifecycleState { DETACHED, ATTACHED_BACKGROUND, ATTACHED_FOREGROUND }
 data class RuntimeActiveAckResult(val sessionChanged: Int, val slotChanged: Int)
 const val HEARTBEAT_INTERVAL_MS = 3000L
-const val HEARTBEAT_TIMEOUT_MS = 15000L
-const val MISSED_HEARTBEATS_REQUIRED = 3
-const val HOST_RECOVERY_GRACE_MS = 20000L
+const val HEARTBEAT_WARNING_MS = 15000L
+const val HEARTBEAT_TIMEOUT_MS = 30000L
+const val MISSED_HEARTBEATS_REQUIRED = 5
+const val HOST_RECOVERY_GRACE_MS = 30000L
 const val ACTIVE_ACK_TIMEOUT_MS = 30000L
 enum class RuntimeSlotId(val processName: String) { VAPP0(":vapp0"), VAPP1(":vapp1") }
 
@@ -328,7 +330,8 @@ open class RuntimeProcessService : Service() {
     private suspend fun messageDiagnostics(req: RuntimeLaunchRequest): RuntimeMessageDiagnostics { val dao=repository.db.messages(); val last=dao.lastForPackage(req.virtualPackageName, req.virtualUserId); return RuntimeMessageDiagnostics(dao.countByStatus(req.virtualPackageName, req.virtualUserId, "PENDING"), dao.countByStatus(req.virtualPackageName, req.virtualUserId, "DELIVERING"), dao.countByStatus(req.virtualPackageName, req.virtualUserId, "CONSUMED"), dao.countByStatus(req.virtualPackageName, req.virtualUserId, "FAILED"), last?.messageId, if (last?.senderPackage == req.virtualPackageName) last.createdAt else null, last?.deliveredAt, lastMessageError, messageDispatcher?.active == true, messageDispatcherSessionId, last?.senderPackage, last?.receiverPackage) }
     private fun guarded(defaultCode: String, block: () -> RuntimeIpcResult): RuntimeIpcResult = try { block() } catch (t: Throwable) { markFatal(launchErrorCode(t, defaultCode), t); RuntimeIpcResult(false, launchErrorCode(t, defaultCode), sanitize(t)) }
     private fun markFatal(code: String, t: Throwable) { stopMessageDispatcher("FATAL"); val r=request; state = RuntimeSlotState.ERROR; lastPhase = code; runCatching { runBlocking { val now=System.currentTimeMillis(); if (r != null) { repository.db.runtime().compareAndSetState(r.sessionId, r.launchAttemptId, "ERROR", code, now, code, sanitize(t)); repository.db.launchTokens().revokeAttempt(r.sessionId, r.launchAttemptId, now) }; repository.db.runtimeSlots().markCrashed(slotId.name, code, sanitize(t), now) } } }
-    override fun onDestroy() { stopMessageDispatcher("SERVICE_DESTROY"); stopHeartbeatLoop(); serviceJob.cancel(); super.onDestroy() }
+    override fun onTrimMemory(level: Int) { VLog.i("RuntimeProcessService", "onTrimMemory($level): conserva ClassLoader/Binder/heartbeat de slot ocupado") }
+    override fun onDestroy() { val active = request != null && running != null; if (!active) { stopMessageDispatcher("SERVICE_DESTROY"); stopHeartbeatLoop() }; serviceJob.cancel(); super.onDestroy() }
     private fun launchErrorCode(t: Throwable, defaultCode: String): String = listOf("SLOT_MISMATCH","LAUNCH_TOKEN_INVALID","LAUNCH_TOKEN_MISMATCH","SLOT_NOT_RESERVED","ACTIVE_ACK_REJECTED","PACKAGE_NOT_REGISTERED","PACKAGE_DISABLED_OR_DAMAGED","APK_HASH_MISMATCH","ENTRY_POINT_NOT_DECLARED","ENTRY_POINT_CLASS_NOT_FOUND","ENTRY_POINT_INTERFACE_MISMATCH").firstOrNull { t.message.orEmpty().contains(it) } ?: defaultCode
     private fun sanitize(t: Throwable): String = (t.message ?: "No se pudo ejecutar la operación del runtime.").take(500)
 }
