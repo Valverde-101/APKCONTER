@@ -4,9 +4,9 @@ import android.os.SystemClock
 import androidx.room.withTransaction
 
 class RuntimeRecoveryManager(private val db: ValcronoDatabase) {
-    suspend fun recover(now: Long = System.currentTimeMillis(), staleHeartbeatMs: Long = 30_000L) = recoverRuntimeAfterHostRestart(now, staleHeartbeatMs)
+    suspend fun recover(now: Long = System.currentTimeMillis(), staleHeartbeatMs: Long = HOST_RECOVERY_GRACE_MS) = recoverRuntimeAfterHostRestart(now, staleHeartbeatMs)
 
-    suspend fun recoverRuntimeAfterHostRestart(now: Long = System.currentTimeMillis(), staleHeartbeatMs: Long = 30_000L) {
+    suspend fun recoverRuntimeAfterHostRestart(now: Long = System.currentTimeMillis(), staleHeartbeatMs: Long = HOST_RECOVERY_GRACE_MS) {
         RuntimeHostRegistry.startRecovery()
         try {
             RuntimeSlotRepository(db).ensureSeeded()
@@ -25,7 +25,7 @@ class RuntimeRecoveryManager(private val db: ValcronoDatabase) {
                     val session = db.runtime().get(sid)
                     if (pidAlive && session != null && session.currentLaunchAttemptId == slot.launchAttemptId) {
                         db.withTransaction {
-                            db.runtime().repairActive(sid, now, slot.hostPid!!)
+                            db.runtime().repairActive(sid, now, SystemClock.elapsedRealtime(), slot.hostPid!!)
                             db.runtimeSlots().heartbeat(slot.slotId, sid, slot.launchAttemptId ?: return@withTransaction, slot.reservationToken ?: return@withTransaction, slot.runtimeGeneration ?: RuntimeHostRegistry.runtimeGeneration, slot.slotEpoch, slot.hostPid, "ACTIVE_BACKGROUND", slot.pssBytes, now, SystemClock.elapsedRealtime(), "recoverRuntimeAfterHostRestart")
                             slot.packageName?.let { pkg -> slot.virtualUserId?.let { user -> db.messages().requeueDeliveringFor(pkg, user) } }
                         }
