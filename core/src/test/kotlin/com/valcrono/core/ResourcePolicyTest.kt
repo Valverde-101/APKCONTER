@@ -14,11 +14,11 @@ class MemoryProfileTest {
         activeSessions = 1,
     )
 
-    @Test fun automaticKeepsOneActiveAndAtMostOnePaused() {
+    @Test fun automaticKeepsTwoActiveWithoutStaticPssEviction() {
         val budget = MemoryBudgetManager().budget(MemoryProfile.AUTOMATIC, motoLike)
-        assertEquals(1, budget.maxActiveApps)
-        assertTrue(budget.maxPausedSessions in 0..1)
-        assertTrue(budget.explanation.contains("objetivo de uso administrado"))
+        assertEquals(2, budget.maxActiveApps)
+        assertEquals(2, budget.maxPausedSessions)
+        assertTrue(budget.explanation.contains("threshold/lowMemory"))
     }
 }
 
@@ -31,21 +31,23 @@ class MemoryBudgetManagerTest {
 }
 
 class SessionEvictionTest {
-    @Test fun pausedLeastRecentlyUsedSessionIsStoppedFirst() {
-        val budget = MemoryBudget(MemoryProfile.LOW_POWER, 100, 1, 0, 10, 1000, 10, OpenAnotherAppPolicy.STOP_CURRENT)
+    @Test fun noSessionIsStoppedUntilEmergencyPressure() {
+        val budget = MemoryBudget(MemoryProfile.AUTOMATIC, 100, 2, 2, 10, Long.MAX_VALUE, 10, OpenAnotherAppPolicy.PAUSE_CURRENT)
         val sessions = listOf(
             VirtualSessionSnapshot("old", "a", SessionState.PAUSED, 1, 70),
             VirtualSessionSnapshot("new", "b", SessionState.PAUSED, 2, 70),
         )
-        val decision = ProcessEvictionPolicy().enforce(budget, sessions, usedBytes = 140)
-        assertEquals("old", decision.stopSessionIds.first())
+        val normal = ProcessEvictionPolicy().enforce(budget, sessions, usedBytes = 140, pressureState = MemoryPressureState.NORMAL)
+        assertTrue(normal.stopSessionIds.isEmpty())
+        val emergency = ProcessEvictionPolicy().enforce(budget.copy(profile = MemoryProfile.CONSERVATIVE), sessions, usedBytes = 140, pressureState = MemoryPressureState.EMERGENCY)
+        assertEquals("old", emergency.stopSessionIds.first())
     }
 }
 
 class TrimMemoryPolicyTest {
-    @Test fun criticalTrimStopsPausedSessions() {
-        assertEquals(TrimPolicy.STOP_PAUSED, MemoryBudgetManager().trimPolicy(15))
-        assertEquals(TrimPolicy.STOP_NON_ESSENTIAL, MemoryBudgetManager().trimPolicy(80))
+    @Test fun trimMemoryNeverStopsSessions() {
+        assertEquals(TrimPolicy.REDUCE_CACHES, MemoryBudgetManager().trimPolicy(15))
+        assertEquals(TrimPolicy.COOPERATIVE_TRIM, MemoryBudgetManager().trimPolicy(80))
     }
 }
 
