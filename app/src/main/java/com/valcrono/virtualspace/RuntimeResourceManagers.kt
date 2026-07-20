@@ -21,6 +21,10 @@ data class RuntimeResourceSnapshot(
     val classLoaders: Int,
     val openSqliteDatabases: Int,
     val runningTasks: Int,
+    val memoryThresholdBytes: Long,
+    val systemLowMemory: Boolean,
+    val memoryPressureState: MemoryPressureState,
+    val consecutiveCriticalSamples: Int = 0,
 )
 
 data class ManagedSession(
@@ -83,6 +87,9 @@ class RuntimeResourceTracker(private val context: Context) {
             classLoaders = currentSessions.count { it.state == SessionState.ACTIVE || it.state == SessionState.PAUSED },
             openSqliteDatabases = currentSessions.sumOf { it.basesOpen },
             runningTasks = 0,
+            memoryThresholdBytes = mi.threshold,
+            systemLowMemory = mi.lowMemory,
+            memoryPressureState = MemoryBudgetManager().pressureState(MemoryInputs(mi.totalMem, mi.availMem, am.memoryClass, am.largeMemoryClass, am.isLowRamDevice, pss, currentSessions.count { it.state == SessionState.ACTIVE }, systemThresholdBytes = mi.threshold, systemLowMemory = mi.lowMemory)),
         )
     }
 }
@@ -93,24 +100,28 @@ class VirtualSessionManager(
     private val evictionPolicy: ProcessEvictionPolicy = ProcessEvictionPolicy(),
 ) {
     private val actions = MutableStateFlow<List<String>>(emptyList())
+    private var consecutiveCriticalSamples = 0
     fun actions(): StateFlow<List<String>> = actions
 
     fun enforce(profile: MemoryProfile, inputs: MemoryInputs) {
+        val pressure = budgetManager.pressureState(inputs, consecutiveCriticalSamples)
+        consecutiveCriticalSamples = if (pressure == MemoryPressureState.CRITICAL || inputs.systemLowMemory) consecutiveCriticalSamples + 1 else 0
+        val confirmed = inputs.systemLowMemory && consecutiveCriticalSamples >= 3
+        val finalPressure = budgetManager.pressureState(inputs, consecutiveCriticalSamples, androidConfirmedScarcity = confirmed && profile == MemoryProfile.CONSERVATIVE)
         val budget = budgetManager.budget(profile, inputs)
         val sessions = tracker.allSessions().map { VirtualSessionSnapshot(it.sessionId, it.packageName, it.state, it.lastActivityAt, it.estimatedBytes, it.isSaving) }
-        val decision = evictionPolicy.enforce(budget, sessions, inputs.processPssBytes)
+        val decision = evictionPolicy.enforce(budget, sessions, inputs.processPssBytes, finalPressure)
         decision.stopSessionIds.forEach { tracker.stop(it) }
-        actions.value = decision.actions
+        actions.value = decision.actions + "Política=$finalPressure threshold=${inputs.systemThresholdBytes} avail=${inputs.availableRamBytes} lowMemory=${inputs.systemLowMemory}"
     }
 
     fun onTrimMemory(level: Int) {
         val policy = budgetManager.trimPolicy(level)
         actions.value = actions.value + "onTrimMemory($level): $policy"
         when (policy) {
-            TrimPolicy.RELEASE_VISUALS, TrimPolicy.REDUCE_CACHES -> tracker.clearStopped()
-            TrimPolicy.STOP_PAUSED, TrimPolicy.STOP_NON_ESSENTIAL -> tracker.stopAllPaused()
+            TrimPolicy.RELEASE_VISUALS, TrimPolicy.REDUCE_CACHES, TrimPolicy.COOPERATIVE_TRIM, TrimPolicy.DIAGNOSTIC_GC -> tracker.clearStopped()
         }
     }
 
-    fun onLowMemory() { tracker.stopAllPaused(); actions.value = actions.value + "onLowMemory: detener sesiones pausadas" }
+    fun onLowMemory() { actions.value = actions.value + "onLowMemory: trim seguro; no se detienen sesiones activas"; tracker.clearStopped() }
 }

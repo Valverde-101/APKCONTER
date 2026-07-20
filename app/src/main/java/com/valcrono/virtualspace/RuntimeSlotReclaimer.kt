@@ -11,6 +11,7 @@ enum class RuntimeReclaimReason(val code: String, val message: String) {
     STALE_HEARTBEAT("STALE_HEARTBEAT", "Heartbeat vencido"),
     BINDER_DIED("BINDER_DIED", "Binder del proceso virtual murió"),
     PROCESS_LOST("PROCESS_LOST", "El proceso anterior ya no existe."),
+    HEARTBEAT_DELAYED_BINDER_ALIVE("HEARTBEAT_DELAYED_BINDER_ALIVE", "Heartbeat retrasado con Binder vivo"),
     STOPPED("STOPPED", "Sesión detenida"),
     CANCELLED("LAUNCH_CANCELLED", "Inicio cancelado"),
     STATE_RECONCILED("STATE_RECONCILED", "Estado reconciliado"),
@@ -62,8 +63,12 @@ class RuntimeSlotReclaimer(private val db: ValcronoDatabase) {
             if (session != null && (session.hasReachedActiveAck != true || slot.state != "OCCUPIED" && slot.state !in setOf("ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND", "PAUSED_BY_USER") || slot.binderAlive == false)) return@forEach
             val pidAlive = slot.hostPid?.let { runCatching { Os.kill(it, 0); true }.getOrDefault(false) } == true
             val fresh = slot.lastHeartbeatElapsedRealtime?.let { elapsedNow - it <= HEARTBEAT_STALE_MS } ?: ((slot.lastHeartbeatAt ?: 0L) >= now - HEARTBEAT_STALE_MS)
-            if (session == null || terminal || !pidAlive || !fresh) {
-                val reason = when { !pidAlive -> RuntimeReclaimReason.PROCESS_LOST; !fresh -> RuntimeReclaimReason.STALE_HEARTBEAT; else -> RuntimeReclaimReason.STATE_RECONCILED }
+            if (!fresh && (pidAlive || slot.binderAlive == true)) {
+                logSlotMutation(RuntimeReclaimReason.HEARTBEAT_DELAYED_BINDER_ALIVE.name, slot, "binderAlive=${slot.binderAlive} pidAlive=$pidAlive")
+                return@forEach
+            }
+            if (session == null || terminal || !pidAlive) {
+                val reason = when { !pidAlive -> RuntimeReclaimReason.PROCESS_LOST; else -> RuntimeReclaimReason.STATE_RECONCILED }
                 if (reclaimSlot(slot.slotId, sid, slot.launchAttemptId, slot.reservationToken, reason, now) == ReclaimResult.RECLAIMED) reclaimed++
             }
         }
