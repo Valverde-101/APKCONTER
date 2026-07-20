@@ -22,7 +22,7 @@ import com.valcrono.runtime.VirtualContent
 import com.valcrono.runtime.VirtualMessage
 
 /** Persistent two-process runtime slot model. Main process owns assignment; :vapp0/:vapp1 own Dex loading. */
-enum class RuntimeSlotState { FREE, RESERVED, STARTING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, PAUSED_BY_USER, STOPPING, STOPPED, CRASHED, ERROR }
+enum class RuntimeSlotState { FREE, RESERVED, STARTING, OCCUPIED, RECLAIMING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, PAUSED_BY_USER, STOPPING, STOPPED, CRASHED, ERROR }
 enum class RuntimeUiLifecycleState { DETACHED, ATTACHED_BACKGROUND, ATTACHED_FOREGROUND }
 data class RuntimeActiveAckResult(val sessionChanged: Int, val slotChanged: Int)
 enum class RuntimeSlotId(val processName: String) { VAPP0(":vapp0"), VAPP1(":vapp1") }
@@ -77,10 +77,10 @@ fun proxyActivityFor(slotId: RuntimeSlotId): Class<out Activity> = when (slotId)
 }
 
 class RuntimeSlotRepository(private val db: ValcronoDatabase, private val maxActiveApps: Int = 2) {
-    suspend fun snapshot(): List<RuntimeSlot> { reconcileRuntimeState(); return db.runtimeSlots().getAll().map { it.toModel() } }
+    suspend fun snapshot(): List<RuntimeSlot> { RuntimeHostRegistry.awaitReady(); reconcileRuntimeState(); return db.runtimeSlots().getAll().map { it.toModel() } }
 
     suspend fun reserve(packageName: String, virtualUserId: Int, sessionId: String, launchAttemptId: String, now: Long = System.currentTimeMillis()): RuntimeSlot? {
-        ensureSeeded(); RuntimeSlotReclaimer(db).reconcileRuntimeState()
+        RuntimeHostRegistry.awaitReady(); ensureSeeded(); RuntimeSlotReclaimer(db).reconcileRuntimeState()
         val elapsed = SystemClock.elapsedRealtime()
         return db.withTransaction {
         db.runtimeSlots().findByPackage(packageName, virtualUserId)?.takeIf { it.state !in setOf("FREE", "STOPPED", "CRASHED", "ERROR") }?.let { existing ->
@@ -199,6 +199,8 @@ open class RuntimeProcessService : Service() {
         fun getStatus(): RuntimeServiceStatus = status()
         fun getMemoryInfo(): SlotMemorySnapshot = currentSlotMemorySnapshot()
         fun requestHeartbeat(): RuntimeIpcResult = heartbeat()
+        fun getRegistration(): VirtualProcessRegistration = registration()
+        fun completeRegistration(result: RuntimeRegistrationResult, rotatedRuntimeToken: String?): RuntimeIpcResult = completeRegistration(result, rotatedRuntimeToken)
     }
 
     override fun onCreate() { super.onCreate(); repository = VirtualRepository(applicationContext); state = RuntimeSlotState.FREE }
@@ -236,14 +238,33 @@ open class RuntimeProcessService : Service() {
     private fun resume(sessionId: String): RuntimeIpcResult = guarded("RESUME_FAILED") { checkSession(sessionId).takeUnless { it.success }?.let { return@guarded it }; setForegroundState(); RuntimeIpcResult(true) }
     private fun stop(sessionId: String): RuntimeIpcResult = guarded("STOP_FAILED") { checkSession(sessionId).takeUnless { it.success }?.let { return@guarded it }; stopMessageDispatcher("STOP_SESSION"); state = RuntimeSlotState.STOPPING; running?.entry?.onPause(); running?.entry?.onStop(); running?.entry?.onDestroy(); running = null; stopHeartbeatLoop(); state = RuntimeSlotState.STOPPED; request?.let { r -> runBlocking { val now=System.currentTimeMillis(); repository.db.runtime().compareAndSetState(r.sessionId, r.launchAttemptId, "STOPPED", "STOPPED", now, null, null); repository.db.runtimeSlots().release(slotId.name, now); repository.db.launchTokens().revokeAttempt(r.sessionId, r.launchAttemptId, now) } }; stopSelf(); RuntimeIpcResult(true) }
     private fun setForegroundState() { state = RuntimeSlotState.ACTIVE_FOREGROUND; transitionUi(RuntimeUiLifecycleState.ATTACHED_FOREGROUND); heartbeat() }
-    private fun heartbeat(): RuntimeIpcResult = guarded("HEARTBEAT_FAILED") { val r = request ?: return@guarded RuntimeIpcResult(false, "NO_SESSION", "No hay sesión activa"); val mem=currentSlotMemorySnapshot(); runBlocking { heartbeatRuntime(r, mem) }; RuntimeIpcResult(true) }
-    private suspend fun heartbeatRuntime(req: RuntimeLaunchRequest, mem: SlotMemorySnapshot) = repository.db.withTransaction {
+    private fun heartbeat(): RuntimeIpcResult = guarded("HEARTBEAT_FAILED") {
+        if (RuntimeHostRegistry.runtimeState == RuntimeState.RECOVERING) return@guarded RuntimeIpcResult(false, RuntimeHeartbeatDisposition.HOST_RECOVERING.name, "Host recuperando runtime; se requiere re-registro.")
+        val r = request ?: return@guarded RuntimeIpcResult(false, "NO_SESSION", "No hay sesión activa")
+        val mem=currentSlotMemorySnapshot(); val disposition = runBlocking { heartbeatRuntime(r, mem) }
+        if (disposition != RuntimeHeartbeatDisposition.ACCEPTED) return@guarded RuntimeIpcResult(false, disposition.name, "Heartbeat no aceptado; re-registro requerido.")
+        RuntimeIpcResult(true)
+    }
+    private suspend fun heartbeatRuntime(req: RuntimeLaunchRequest, mem: SlotMemorySnapshot): RuntimeHeartbeatDisposition = repository.db.withTransaction {
+        val slot = repository.db.runtimeSlots().get(slotId.name)
+        val disposition = when {
+            slot == null -> RuntimeHeartbeatDisposition.SLOT_EMPTY
+            slot.sessionId == null -> RuntimeHeartbeatDisposition.SLOT_EMPTY
+            slot.sessionId != req.sessionId -> RuntimeHeartbeatDisposition.SLOT_OWNED_BY_OTHER_SESSION
+            repository.db.runtime().get(req.sessionId) == null -> RuntimeHeartbeatDisposition.SESSION_UNKNOWN
+            else -> RuntimeHeartbeatDisposition.ACCEPTED
+        }
+        if (disposition != RuntimeHeartbeatDisposition.ACCEPTED) {
+            logLaunch("HEARTBEAT_SLOT_REJECTED", req.sessionId, req.launchAttemptId, null, req.virtualPackageName, req.virtualUserId, disposition.name, slotId.name)
+            return@withTransaction disposition
+        }
         val slotChanged = repository.db.runtimeSlots().heartbeat(slotId.name, req.sessionId, mem.pid, state.name, mem.pssBytes, mem.timestamp, SystemClock.elapsedRealtime())
         val sessionChanged = repository.db.runtime().heartbeatRuntimeSession(req.sessionId, req.launchAttemptId, state.name, lastPhase, mem.timestamp, mem.pid)
-        check(slotChanged == 1) { "HEARTBEAT_SLOT_REJECTED sessionId=${req.sessionId} slotId=${slotId.name}" }
-        check(sessionChanged == 1) { "HEARTBEAT_SESSION_REJECTED sessionId=${req.sessionId} attemptId=${req.launchAttemptId}" }
+        if (slotChanged == 1 && sessionChanged == 1) RuntimeHeartbeatDisposition.ACCEPTED else RuntimeHeartbeatDisposition.SESSION_STALE
     }
     private fun acknowledgeRuntimeActive(req: RuntimeLaunchRequest, mem: SlotMemorySnapshot): RuntimeActiveAckResult = runBlocking { repository.db.withTransaction { val now = System.currentTimeMillis(); val sessionChanged = repository.db.runtime().acknowledgeActive(req.sessionId, req.launchAttemptId, now, mem.pid); val slotChanged = repository.db.runtimeSlots().acknowledgeStarted(slotId.name, req.sessionId, req.launchAttemptId, mem.pid, state.name, mem.pssBytes, now, SystemClock.elapsedRealtime()); check(sessionChanged == 1) { "ACTIVE_ACK_SESSION_REJECTED sessionId=${req.sessionId} attemptId=${req.launchAttemptId}" }; check(slotChanged == 1) { "ACTIVE_ACK_SLOT_REJECTED sessionId=${req.sessionId} slotId=${slotId.name}" }; RuntimeActiveAckResult(sessionChanged, slotChanged) } }
+    private fun registration(): VirtualProcessRegistration { val mem = currentSlotMemorySnapshot(); val r = request; return VirtualProcessRegistration(slotId.name, r?.virtualPackageName, r?.sessionId, mem.pid, SystemClock.elapsedRealtime(), r?.launchAttemptId, r?.launchToken, SystemClock.elapsedRealtime(), running != null, state.name) }
+    private fun completeRegistration(result: RuntimeRegistrationResult, rotatedRuntimeToken: String?): RuntimeIpcResult { if (result == RuntimeRegistrationResult.PROCESS_MUST_TERMINATE) stopSelf(); if (result == RuntimeRegistrationResult.ADOPTED) { lastPhase = "ADOPTED_BY_HOST"; startHeartbeatLoop(); request?.let { startMessageDispatcher(it) } }; return RuntimeIpcResult(result == RuntimeRegistrationResult.ADOPTED || result == RuntimeRegistrationResult.RE_REGISTER_REQUIRED, result.name, rotatedRuntimeToken) }
     private fun cachedContentResult(sessionId: String): RuntimeContentResult = checkSession(sessionId).takeUnless { it.success }?.let { RuntimeContentResult(it) } ?: RuntimeContentResult(RuntimeIpcResult(true), cachedContent)
     private fun dispatchCachedAction(sessionId: String, actionId: String): RuntimeContentResult = safeContent(sessionId) { entry -> runBlocking { runtimeMutex.withLock { entry.onAction(actionId).also { c -> updateCachedContent(c) } } } }
     private fun transitionUi(target: RuntimeUiLifecycleState) { val entry = running?.entry ?: return; if (uiLifecycleState == target) return; when (uiLifecycleState to target) { RuntimeUiLifecycleState.DETACHED to RuntimeUiLifecycleState.ATTACHED_FOREGROUND -> { entry.onStart(); entry.onResume() }; RuntimeUiLifecycleState.ATTACHED_BACKGROUND to RuntimeUiLifecycleState.ATTACHED_FOREGROUND -> entry.onResume(); RuntimeUiLifecycleState.ATTACHED_FOREGROUND to RuntimeUiLifecycleState.ATTACHED_BACKGROUND -> entry.onPause(); RuntimeUiLifecycleState.ATTACHED_BACKGROUND to RuntimeUiLifecycleState.DETACHED -> entry.onStop(); else -> Unit }; uiLifecycleState = target }
