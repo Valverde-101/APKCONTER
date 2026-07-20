@@ -34,7 +34,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
         val sid = sessionId
         handler.post { binder = null; isBound = false; isBinding = false; boundSessionId = null; renderError("PROCESS_LOST: binder muerto") }
         if (sid.isNotBlank()) CoroutineScope(Dispatchers.IO).launch {
-            DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, RuntimeReclaimReason.BINDER_DIED) }
+            DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.BINDER_DIED) }
         }
     }
     private val uiCallback = object : RuntimeProcessService.RuntimeUiCallback {
@@ -51,7 +51,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
             val content = binder?.attachUi(sessionId, uiCallback)
             if (content?.result?.success == true && content.content != null) render(content.content) else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
         }
-        override fun onServiceDisconnected(name: ComponentName?) { val sid = boundSessionId; binder = null; isBound = false; isBinding = false; boundSessionId = null; if (sid != null) CoroutineScope(Dispatchers.IO).launch { DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, RuntimeReclaimReason.BINDER_DIED) } }; renderError("PROCESS_LOST: servicio desconectado") }
+        override fun onServiceDisconnected(name: ComponentName?) { val sid = boundSessionId; binder = null; isBound = false; isBinding = false; boundSessionId = null; if (sid != null) CoroutineScope(Dispatchers.IO).launch { DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.BINDER_DIED) } }; renderError("PROCESS_LOST: servicio desconectado") }
         override fun onBindingDied(name: ComponentName?) { onServiceDisconnected(name) }
         override fun onNullBinding(name: ComponentName?) { onServiceDisconnected(name) }
     }
@@ -81,7 +81,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
         val openMode = intent.getStringExtra("openMode") ?: "COLD_START"
         val serviceIntent = Intent(this, serviceFor(slotId))
         if (openMode != "WARM_RESUME") {
-            val request = RuntimeLaunchRequest(intent.getIntExtra("virtualUserId", -1), intent.getStringExtra("virtualPackageName").orEmpty(), intent.getStringExtra("virtualActivityName").orEmpty(), sessionId, intent.getStringExtra("launchAttemptId").orEmpty(), intent.getStringExtra("launchToken").orEmpty(), slotId.name)
+            val request = RuntimeLaunchRequest(intent.getIntExtra("virtualUserId", -1), intent.getStringExtra("virtualPackageName").orEmpty(), intent.getStringExtra("virtualActivityName").orEmpty(), sessionId, intent.getStringExtra("launchAttemptId").orEmpty(), intent.getStringExtra("launchToken").orEmpty(), slotId.name, intent.getStringExtra("reservationToken").orEmpty(), intent.getLongExtra("runtimeGeneration", -1L), intent.getLongExtra("slotEpoch", -1L))
             serviceIntent.putExtra("runtimeLaunchRequest", request)
             startService(serviceIntent)
         }
