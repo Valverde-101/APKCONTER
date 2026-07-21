@@ -17,7 +17,8 @@ enum class RuntimeReclaimReason(val code: String, val message: String) {
     STATE_RECONCILED("STATE_RECONCILED", "Estado reconciliado"),
     HOST_RESTART("HOST_RESTART", "Reinicio del host reconciliado"),
     STARTUP_TIMEOUT("STARTUP_TIMEOUT", "Timeout durante startup"),
-    SLOT_NORMALIZED_FREE("SLOT_NORMALIZED_FREE", "Slot vacío normalizado a FREE")
+    SLOT_NORMALIZED_FREE("SLOT_NORMALIZED_FREE", "Slot vacío normalizado a FREE"),
+    HOST_REMOVED_FROM_RECENTS("STOPPED_BY_HOST", "VirtualSpace fue retirada de Recientes")
 }
 
 enum class ReclaimResult { RECLAIMED, OWNERSHIP_CHANGED, SLOT_NOT_FOUND, MISSING_OWNER }

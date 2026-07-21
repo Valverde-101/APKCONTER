@@ -39,10 +39,23 @@ object RuntimeHostRegistry {
         logLaunch("HOST_RECOVERY_COMPLETED", null, null, hostInstanceId, null, null, "durationMs=$lastRecoveryDurationMs", "READY")
     }
 
-    suspend fun awaitReady() = ready.await()
+    fun beginHostRecentsShutdown() {
+        runtimeState = RuntimeState.SHUTTING_DOWN
+        if (!ready.isCompleted) ready.complete(Unit)
+        logLaunch("HOST_REMOVED_FROM_RECENTS", null, null, hostInstanceId, null, null, "generation=$runtimeGeneration", "SHUTTING_DOWN")
+    }
+
+    fun ensureAcceptingLaunches() {
+        check(runtimeState == RuntimeState.READY) { "HOST_SHUTTING_DOWN" }
+    }
+
+    suspend fun awaitReady() {
+        ready.await()
+        ensureAcceptingLaunches()
+    }
 }
 
-enum class RuntimeState { RECOVERING, READY }
+enum class RuntimeState { RECOVERING, READY, SHUTTING_DOWN }
 enum class RuntimeRegistrationResult { ADOPTED, RE_REGISTER_REQUIRED, STALE_SESSION, SLOT_CONFLICT, PROCESS_MUST_TERMINATE }
 enum class RuntimeHeartbeatDisposition { ACCEPTED, SESSION_UNKNOWN, SESSION_STALE, OWNER_GENERATION_MISMATCH, SLOT_EMPTY, SLOT_OWNED_BY_OTHER_SESSION, HOST_RECOVERING }
 

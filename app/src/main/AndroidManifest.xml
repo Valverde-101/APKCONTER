@@ -75,6 +75,6 @@
         </provider>
             <service android:name=".RuntimeSlot0Service" android:process=":vapp0" android:exported="false" />
         <service android:name=".RuntimeSlot1Service" android:process=":vapp1" android:exported="false" />
-        <service android:name=".SessionKeeperService" android:exported="false" android:foregroundServiceType="specialUse" />
+        <service android:name=".SessionKeeperService" android:exported="false" android:foregroundServiceType="specialUse" android:stopWithTask="false" />
     </application>
 </manifest>
