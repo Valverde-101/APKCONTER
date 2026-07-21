@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
 private const val TOKEN_TTL_MS = 5 * 60 * 1000L
-const val START_TIMEOUT_MS: Long = 30_000L
+const val START_TIMEOUT_MS: Long = SERVICE_CONNECT_TIMEOUT_MS + CLASSLOADER_LOAD_TIMEOUT_MS + ACTIVITY_CREATE_TIMEOUT_MS + ACTIVE_ACK_TIMEOUT_MS
 
 data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, val launchToken: String, val shouldStartActivity: Boolean, val slotId: RuntimeSlotId?, val reservationToken: String, val runtimeGeneration: Long, val slotEpoch: Long)
 
@@ -47,7 +47,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         }
         val mode = when {
             (session.state == "ACTIVE" || (session.state == "STARTING" && slotActive)) && slotActive && processAlive && heartbeatFresh && classLoaderLoaded -> RuntimeOpenMode.WARM_RESUME
-            pid != null && processAlive && heartbeatFresh -> RuntimeOpenMode.RECOVER_SERVICE
+            pid != null && processAlive && heartbeatFresh && slotActive && classLoaderLoaded -> RuntimeOpenMode.RECOVER_SERVICE
             else -> RuntimeOpenMode.COLD_START
         }
         return RuntimeOpenDecision(mode, session.sessionId, RuntimeSlotId.valueOf(slot.slotId), slot.taskId, processAlive, heartbeatFresh, slot.activityAttached)
@@ -61,8 +61,7 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
         val reusable = before?.takeUnless { it.state in setOf("ERROR", "STOPPED", "CRASHED", "DEAD", "CANCELLED") }
         val sessionId = reusable?.sessionId ?: UUID.randomUUID().toString()
         before?.takeIf { it.sessionId != sessionId }?.let { old -> old.currentLaunchAttemptId?.let { db.launchTokens().revokeAttempt(old.sessionId, it, now) }; db.runtime().deleteSession(old.sessionId) }
-        val existingStartingAttemptId = reusable?.takeIf { it.state == "STARTING" && now - it.lastHeartbeatAt < START_TIMEOUT_MS }?.currentLaunchAttemptId
-        val attemptId = existingStartingAttemptId ?: UUID.randomUUID().toString()
+        val attemptId = UUID.randomUUID().toString()
         val token = UUID.randomUUID().toString()
         logLaunch("SESSION_PREPARE", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, "STARTING")
         val existingActive = reusable?.takeIf { it.state in setOf("ACTIVE", "ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND") }

@@ -57,10 +57,10 @@ class RuntimeSlotReclaimer(private val db: ValcronoDatabase) {
         val elapsedNow = SystemClock.elapsedRealtime()
         db.runtimeSlots().getAll().forEach { slot ->
             val sid = slot.sessionId ?: return@forEach
-            if (slot.state in setOf("FREE", "STOPPED", "RESERVED", "BINDING", "STARTING", "WAITING_ACTIVE_ACK", "RECOVERING", "ADOPTING", "STOPPING", "RECLAIMING")) return@forEach
+            if (slot.state in setOf("FREE", "STOPPED", "RESERVED", "PROCESS_STARTING", "SERVICE_CONNECTED", "LOAD_REQUEST_SENT", "CLASSLOADER_READY", "ACTIVITY_STARTING", "RECOVERING", "ADOPTING", "STOPPING", "RECLAIMING")) return@forEach
             val session = db.runtime().get(sid)
             val terminal = session?.state in setOf("ERROR", "STOPPED", "CRASHED", "DEAD", "CANCELLED") || slot.state in setOf("CRASHED", "ERROR")
-            if (session != null && (session.hasReachedActiveAck != true || slot.state != "OCCUPIED" && slot.state !in setOf("ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND", "PAUSED_BY_USER") || slot.binderAlive == false)) return@forEach
+            if (session != null && (session.hasReachedActiveAck != true || slot.state !in setOf("ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND", "PAUSED_BY_USER") || slot.binderAlive == false)) return@forEach
             val pidAlive = slot.hostPid?.let { runCatching { Os.kill(it, 0); true }.getOrDefault(false) } == true
             val fresh = slot.lastHeartbeatElapsedRealtime?.let { elapsedNow - it <= HEARTBEAT_STALE_MS } ?: ((slot.lastHeartbeatAt ?: 0L) >= now - HEARTBEAT_STALE_MS)
             if (!fresh && (pidAlive || slot.binderAlive == true)) {
