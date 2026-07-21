@@ -4,13 +4,30 @@ import android.app.*
 import android.content.*
 import android.os.Build
 import android.os.IBinder
+import android.os.Process
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import com.valcrono.core.VLog
 
 class SessionKeeperService : Service(), ComponentCallbacks2 {
+    private val shutdownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val connections = mutableMapOf<RuntimeSlotId, ServiceConnection>()
     override fun onCreate() { super.onCreate(); createChannel(); startForeground(NOTIFICATION_ID, notification()) }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int { bindActiveSlots(); return START_STICKY }
     override fun onBind(intent: Intent?): IBinder? = null
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        shutdownScope.launch {
+            shutdownAllVirtualSessions(
+                context = applicationContext,
+                reason = ShutdownReason.HOST_REMOVED_FROM_RECENTS
+            )
+            stopForeground(true)
+            stopSelf()
+            Process.killProcess(Process.myPid())
+        }
+    }
     override fun onDestroy() { connections.values.forEach { runCatching { unbindService(it) } }; connections.clear(); super.onDestroy() }
     override fun onTrimMemory(level: Int) { VLog.i("SessionKeeperService", "onTrimMemory($level): cachés reconstruibles liberadas; sesiones activas conservadas") }
     override fun onLowMemory() { onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE) }

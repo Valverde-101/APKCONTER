@@ -21,19 +21,9 @@ class RuntimeRecoveryManager(private val db: ValcronoDatabase) {
                     return@forEach
                 }
                 if (sid != null) {
-                    val pidAlive = slot.hostPid?.let { runCatching { android.system.Os.kill(it, 0); true }.getOrDefault(false) } == true
-                    val session = db.runtime().get(sid)
-                    if (pidAlive && session != null && session.currentLaunchAttemptId == slot.launchAttemptId) {
-                        db.withTransaction {
-                            db.runtime().repairActive(sid, now, SystemClock.elapsedRealtime(), slot.hostPid!!)
-                            db.runtimeSlots().heartbeat(slot.slotId, sid, slot.launchAttemptId ?: return@withTransaction, slot.reservationToken ?: return@withTransaction, slot.runtimeGeneration ?: RuntimeHostRegistry.runtimeGeneration, slot.slotEpoch, slot.hostPid, "ACTIVE_BACKGROUND", slot.pssBytes, now, SystemClock.elapsedRealtime(), "recoverRuntimeAfterHostRestart")
-                            slot.packageName?.let { pkg -> slot.virtualUserId?.let { user -> db.messages().requeueDeliveringFor(pkg, user) } }
-                        }
-                        logLaunch("SESSION_ADOPTED", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, "previousHostDetected", "ADOPTED")
-                    } else {
-                        logLaunch(if (pidAlive) "SESSION_REJECTED" else "STALE_PROCESS_TERMINATED", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, "pidAlive=$pidAlive", "FREE")
-                        reclaimer.reclaimSlot(slot.slotId, sid, slot.launchAttemptId, slot.reservationToken, RuntimeReclaimReason.HOST_RESTART, now)
-                    }
+                    slot.hostPid?.let { pid -> runCatching { android.os.Process.killProcess(pid) } }
+                    logLaunch("PREVIOUS_HOST_SESSION_INVALIDATED", sid, slot.launchAttemptId, null, slot.packageName, slot.virtualUserId, "hostInstanceId/PID/runtimeGeneration anterior", "FREE")
+                    reclaimer.reclaimSlot(slot.slotId, sid, slot.launchAttemptId, slot.reservationToken, RuntimeReclaimReason.HOST_RESTART, now)
                 }
             }
             reclaimer.reconcileRuntimeState(now)
