@@ -1,5 +1,7 @@
 package com.valcrono.virtualspace
 
+import com.valcrono.virtualspace.runtime.HostTaskSupervisorService
+
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
@@ -103,7 +105,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     private fun runAction(actionId: String) { val result = binder?.dispatchAction(sessionId, actionId); if (result?.result?.success == true && result.content != null) render(result.content) else renderError(result?.result?.sanitizedMessage ?: "RUNTIME_ACTION_FAILED") }
     private fun renderError(message: String) { container.removeAllViews(); container.addView(TextView(this).apply { text = message }) }
     override fun onStart() { super.onStart(); recordActivityAttached(); binder?.bringToForeground(sessionId) }
-    override fun onResume() { super.onResume(); recordActivityAttached(); binder?.resumeSession(sessionId) }
+    override fun onResume() { super.onResume(); recordActivityAttached(); HostTaskSupervisorService.registerVirtualTask(this, sessionId, slotId, taskId); binder?.resumeSession(sessionId) }
     override fun onPause() { binder?.detachUi(sessionId); super.onPause() }
     override fun onStop() { recordActivityDetached(); super.onStop() }
     override fun onDestroy() { runCatching { binder?.unlinkToDeath(deathRecipient, 0) }; if (isBound || isBinding) runCatching { unbindService(connection) }; isBound = false; isBinding = false; boundSessionId = null; binder = null; super.onDestroy() }
