@@ -6,6 +6,8 @@ import android.app.Instrumentation
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
 import android.content.res.AssetManager
 import android.content.res.Resources
@@ -38,13 +40,43 @@ class GenericPackageContext(base: Context, private val pkg: VirtualPackageEntity
     override fun getFilesDir(): File = File(root, "data/files").apply { mkdirs() }
     override fun getCacheDir(): File = File(root, "data/cache").apply { mkdirs() }
     override fun getCodeCacheDir(): File = File(root, "data/code_cache").apply { mkdirs() }
+    override fun getOpPackageName(): String = pkg.packageName
+    override fun getAttributionTag(): String? = null
+    override fun getApplicationContext(): Context = this
+    override fun getPackageManager(): PackageManager = baseContext.packageManager
+    override fun getNoBackupFilesDir(): File = File(root, "data/no_backup").apply { mkdirs() }
+    override fun getDataDir(): File = File(root, "data").apply { mkdirs() }
     override fun getDatabasePath(name: String): File = File(File(root, "data/databases").apply { mkdirs() }, name)
+    override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = baseContext.getSharedPreferences("virtual-${pkg.virtualUserId}-${pkg.packageName}-$name", mode)
+    override fun getExternalFilesDir(type: String?): File? = File(root, "data/external/files" + (type?.let { "/$it" } ?: "")).apply { mkdirs() }
+    override fun getExternalCacheDir(): File? = File(root, "data/external/cache").apply { mkdirs() }
+    override fun createPackageContext(packageName: String, flags: Int): Context { require(packageName == pkg.packageName) { "VIRTUAL_PACKAGE_CONTEXT_OUT_OF_SCOPE" }; return this }
+    override fun getSystemService(name: String): Any? = VirtualSystemServiceBroker(baseContext).getSystemService(name)
+    override fun getContentResolver(): android.content.ContentResolver = baseContext.contentResolver
 }
 
 class GenericPackageManagerFacade(private val pkg: VirtualPackageEntity, private val appInfo: ApplicationInfo) {
     fun applicationInfo(): ApplicationInfo = ApplicationInfo(appInfo)
     fun packageName(): String = pkg.packageName
 }
+
+
+class VirtualPackageManagerFacade(private val pkg: VirtualPackageEntity, private val appInfo: ApplicationInfo)
+class VirtualContentResolver
+class VirtualSharedPreferencesManager
+class VirtualSystemServiceBroker(private val host: Context) { fun getSystemService(name: String): Any? = host.getSystemService(name) }
+
+interface ActivityAttachBridge { fun attach(activity: Activity, context: Context, app: Application?, instrumentation: Instrumentation, intent: Intent, title: String)
+    companion object { fun select(): ActivityAttachBridge = when { Build.VERSION.SDK_INT >= 35 -> ActivityAttachBridgeApi35(); Build.VERSION.SDK_INT >= 28 -> ActivityAttachBridgeApi28To34(); else -> ActivityAttachBridgeApi24To27() } }
+}
+abstract class ReflectiveActivityAttachBridge(private val minParams: Int) : ActivityAttachBridge {
+    override fun attach(activity: Activity, context: Context, app: Application?, instrumentation: Instrumentation, intent: Intent, title: String) { try { val method = Activity::class.java.declaredMethods.singleOrNull { m -> m.name == "attach" && m.parameterTypes.size >= minParams && m.parameterTypes.any { it == Instrumentation::class.java } && m.parameterTypes.any { it == Application::class.java } } ?: throw NoSuchMethodException("ACTIVITY_ATTACH_SIGNATURE_MISMATCH sdk=${Build.VERSION.SDK_INT}"); method.isAccessible = true; val args = method.parameterTypes.map { p -> when { p == Context::class.java -> context; p == Instrumentation::class.java -> instrumentation; p == Application::class.java -> app; p == Intent::class.java -> intent; p == CharSequence::class.java -> title; p == Int::class.javaPrimitiveType -> 0; p == Boolean::class.javaPrimitiveType -> false; p == android.content.res.Configuration::class.java -> context.resources.configuration; p == android.os.IBinder::class.java -> android.os.Binder(); else -> null } }.toTypedArray(); if (args.any { it == null }) throw IllegalStateException("ACTIVITY_ATTACH_SIGNATURE_HAS_UNSUPPORTED_PARAMETER sdk=${Build.VERSION.SDK_INT} params=${method.parameterTypes.joinToString { it.name }}"); method.invoke(activity, *args) } catch (t: Throwable) { val code = if (Build.VERSION.SDK_INT >= 35) "ACTIVITY_ATTACH_RESTRICTED_ANDROID15" else "ACTIVITY_ATTACH_SIGNATURE_MISMATCH"; throw IllegalStateException("$code activity=${activity::class.java.name}", t) } }
+}
+class ActivityAttachBridgeApi24To27 : ReflectiveActivityAttachBridge(18)
+class ActivityAttachBridgeApi28To34 : ReflectiveActivityAttachBridge(20)
+class ActivityAttachBridgeApi35 : ReflectiveActivityAttachBridge(20)
+class VirtualProviderManager
+class AndroidXStartupBridge
 
 class GuestActivityController(private val hostContext: Context, private val pkg: VirtualPackageEntity) {
     private val instrumentation = GenericInstrumentation()
@@ -72,7 +104,7 @@ class GuestActivityController(private val hostContext: Context, private val pkg:
         val intent = Intent().setClassName(pkg.packageName, activityName)
         val activity = try { instrumentation.newActivity(loader, activityName, intent) } catch (e: ClassNotFoundException) { throw IllegalStateException("ACTIVITY_CLASS_NOT_FOUND activityName=$activityName", e) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_INSTANTIATION_FAILED activityName=$activityName", t) }
         running.genericPhases += "GUEST_ACTIVITY_INSTANTIATED"
-        attachActivity(activity, gctx, app, intent, pkg.label); running.genericPhases += "GUEST_ACTIVITY_ATTACHED"
+        ActivityAttachBridge.select().attach(activity, gctx, app, instrumentation, intent, pkg.label); running.genericPhases += "GUEST_ACTIVITY_ATTACHED"
         try { instrumentation.callActivityOnCreate(activity, Bundle()) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_ONCREATE_FAILED activityName=$activityName", t) }; running.genericPhases += "GUEST_ACTIVITY_CREATED"
         try { instrumentation.callActivityOnStart(activity); instrumentation.callActivityOnResume(activity) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_ONRESUME_FAILED activityName=$activityName", t) }; running.genericPhases += "GUEST_ACTIVITY_RESUMED"
         running.genericGuestActivity = activity
@@ -80,7 +112,7 @@ class GuestActivityController(private val hostContext: Context, private val pkg:
     }
     private fun apkResources(apk: File): Resources = try { val assets = AssetManager::class.java.getDeclaredConstructor().newInstance(); AssetManager::class.java.getMethod("addAssetPath", String::class.java).invoke(assets, apk.absolutePath); Resources(assets, hostContext.resources.displayMetrics, hostContext.resources.configuration) } catch (t: Throwable) { throw IllegalStateException("RESOURCE_LOAD_FAILED apkPath=${apk.absolutePath}", t) }
     private fun createApplication(context: Context, loader: ClassLoader): Application { val name = pkg.applicationClassName ?: Application::class.java.name; return try { instrumentation.newApplication(loader, name, context).also { it.onCreate() } } catch (e: ClassNotFoundException) { throw IllegalStateException("APPLICATION_CLASS_NOT_FOUND applicationClass=$name", e) } catch (t: Throwable) { throw IllegalStateException("APPLICATION_CREATE_FAILED applicationClass=$name", t) } }
-    private fun attachActivity(activity: Activity, context: Context, app: Application?, intent: Intent, title: String) { try { val m = Activity::class.java.declaredMethods.first { it.name == "attach" }; m.isAccessible = true; val args = m.parameterTypes.map { p -> when { p == Context::class.java -> context; p == Instrumentation::class.java -> instrumentation; p == Application::class.java -> app; p == Intent::class.java -> intent; p == CharSequence::class.java -> title; p == Int::class.javaPrimitiveType -> 0; p == Boolean::class.javaPrimitiveType -> false; else -> null } }.toTypedArray(); m.invoke(activity, *args) } catch (t: Throwable) { val code = if (Build.VERSION.SDK_INT >= 35) "ACTIVITY_ATTACH_BLOCKED_ANDROID15" else "ACTIVITY_ATTACH_FAILED"; throw IllegalStateException("$code launchPhase=GUEST_ACTIVITY_ATTACHED packageName=${pkg.packageName} activityName=${pkg.launcherActivityName}", t) } }
+
 }
 
 object NativeLibraryExtractor {
