@@ -1,5 +1,7 @@
 package com.valcrono.virtualspace
 
+import com.valcrono.virtualspace.runtime.HostTaskSupervisorService
+
 import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -186,10 +188,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         pendingLaunchPackage = null
     }
 
-    override fun onResume() { super.onResume(); if (::runtimeSessions.isInitialized) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileActiveSlots() } }
+    override fun onResume() { super.onResume(); registerHostTaskWithSupervisor(); if (::runtimeSessions.isInitialized) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileActiveSlots() } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        registerHostTaskWithSupervisor()
         installViewerCrashReporter()
         pendingViewerCrash = CrashReportRepository(CrashReportStore(applicationContext)).latest()
         repository = VirtualRepository(applicationContext)
@@ -1142,6 +1145,10 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         }
     }
 
+    private fun registerHostTaskWithSupervisor() {
+        HostTaskSupervisorService.registerHostTask(this, taskId, componentName.flattenToString(), RuntimeHostRegistry.hostInstanceId)
+    }
+
     private fun openVirtual(pkg: VirtualPackageEntity) {
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
             val decision = withContext(Dispatchers.IO) { runtimeSessions.resolveOpenDecision(pkg.packageName, pkg.virtualUserId) }
@@ -1226,6 +1233,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
             val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity, settingsStore.settings.first().maxActiveApps) }
+            HostTaskSupervisorService.ensureRunning(this@MainActivity)
             if (!prepared.shouldStartActivity) { bringRuntimeToForeground(pkg, prepared, activity); return@launch }
             logLaunch("INTENT_SENT", prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, pkg.packageName, pkg.virtualUserId, "STARTING", "STARTING")
             startService(Intent(this@MainActivity, serviceFor(prepared.slotId ?: RuntimeSlotId.VAPP0)).putExtra("runtimeLaunchRequest", RuntimeLaunchRequest(pkg.virtualUserId, pkg.packageName, activity, prepared.sessionId, prepared.launchAttemptId, prepared.launchToken, prepared.slotId?.name ?: RuntimeSlotId.VAPP0.name, prepared.reservationToken, prepared.runtimeGeneration, prepared.slotEpoch)))
