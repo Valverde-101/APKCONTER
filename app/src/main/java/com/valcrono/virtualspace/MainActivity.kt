@@ -77,6 +77,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -743,7 +744,32 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val root = repository.storage().resolver().packageRoot(pkg.virtualUserId, pkg.packageName)
         val session by repository.db.runtime().observeSessions().collectAsState(initial = emptyList())
         val roomSession = session.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }
+        val traces by produceState(initialValue = emptyList<RuntimeLaunchTraceEntity>(), roomSession?.currentLaunchAttemptId, roomSession?.sessionId) {
+            value = roomSession?.currentLaunchAttemptId?.let { repository.db.runtimeLaunchTraces().getForAttempt(it) } ?: roomSession?.sessionId?.let { repository.db.runtimeLaunchTraces().getForSession(it) } ?: emptyList()
+        }
+        val failedTrace = traces.lastOrNull { !it.success } ?: traces.lastOrNull()
+        val terminalState = roomSession?.terminalState ?: roomSession?.state ?: "DETENIDA"
+        val terminalCode = roomSession?.terminalErrorCode ?: roomSession?.errorCode
+        val terminalMessage = roomSession?.terminalErrorMessage ?: roomSession?.sanitizedError
         val rows = listOf(
+            "Motor" to if (pkg.detectedFramework == "FLUTTER") "Flutter Runtime (pendiente)" else pkg.runtimeMode,
+            "Estado terminal" to terminalState,
+            "Slot" to (traces.lastOrNull()?.slotId ?: "No disponible"),
+            "PID" to (roomSession?.hostPid?.toString() ?: failedTrace?.pid?.toString() ?: "PROCESS_NOT_STARTED"),
+            "Proceso" to (failedTrace?.processName ?: "No disponible"),
+            "Última fase completada" to (traces.lastOrNull { it.success }?.phase ?: roomSession?.launchPhase ?: "No disponible"),
+            "Fase fallida" to (roomSession?.terminalPhase ?: failedTrace?.phase ?: "No disponible"),
+            "Código" to (terminalCode ?: "Sin error terminal"),
+            "Excepción" to (roomSession?.terminalExceptionClass ?: failedTrace?.exceptionClass ?: "No disponible"),
+            "Causa raíz" to (roomSession?.terminalRootCauseClass ?: failedTrace?.rootCauseClass ?: "No disponible"),
+            "Hora" to (roomSession?.failedAt?.let(::date) ?: failedTrace?.timestampWallClock?.let(::date) ?: "No disponible"),
+            "Duración" to ((failedTrace?.durationMs ?: traces.sumOf { it.durationMs }).toString() + " ms"),
+            "Artefacto APK" to pkg.apkVirtualPath,
+            "SHA-256" to pkg.sha256,
+            "ClassLoader" to (roomSession?.classLoaderState ?: "No disponible"),
+            "Application" to (pkg.applicationClassName ?: "No"),
+            "Providers" to pkg.declaredProvidersJson,
+            "Activity" to (pkg.launcherActivityName ?: "No disponible"),
             "Hash del APK" to pkg.sha256,
             "Ruta interna" to "aislada (no expuesta a apps virtuales)",
             "Firma" to "Validada por PackageManager",
@@ -773,8 +799,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             "startedAt" to (roomSession?.startedAt?.let(::date) ?: "No disponible"),
             "lastHeartbeatAt" to (roomSession?.lastHeartbeatAt?.let(::date) ?: "No disponible"),
             "lastActivityAt" to (roomSession?.lastActivityAt?.let(::date) ?: "No disponible"),
-            "errorCode" to (roomSession?.errorCode ?: "No disponible"),
-            "sanitizedError" to (roomSession?.sanitizedError ?: "No disponible"),
+            "errorCode" to (terminalCode ?: "Sin error terminal"),
+            "sanitizedError" to (terminalMessage ?: "Sin error terminal"),
             "classLoaderState" to (roomSession?.classLoaderState ?: "No disponible"),
             "Archivos usados" to root.walkTopDown().count { it.isFile }.toString(),
             "Clasificación de compatibilidad" to pkg.compatibilityLevel,
@@ -782,11 +808,25 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item { Text("Diagnóstico de ${pkg.label}", style = MaterialTheme.typography.headlineSmall) }
             items(rows) { row -> Text("${row.first}: ${row.second}") }
+            item { Text("Timeline", style = MaterialTheme.typography.titleMedium) }
+            items(traces) { trace ->
+                val marker = if (trace.success) "✓" else "✗"
+                Text("$marker ${trace.phase} · ${trace.durationMs} ms" + (trace.errorCode?.let { "\n  $it: ${trace.rootCauseMessage ?: trace.exceptionMessage ?: ""}" } ?: ""))
+            }
             item {
-                Button(onClick = {
-                    val logs = VLog.recent().joinToString("\n")
-                    (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono logs", logs))
-                }) { Text("Copiar logs") }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        val diagnostic = rows.joinToString("\n") { "${it.first}: ${it.second}" } + "\nTimeline:\n" + traces.joinToString("\n") { "${if (it.success) "✓" else "✗"} ${it.phase} · ${it.durationMs} ms ${it.errorCode ?: ""}" }
+                        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono diagnóstico", diagnostic))
+                    }) { Text("Copiar diagnóstico") }
+                    Button(onClick = {
+                        val json = "{\"packageName\":\"${pkg.packageName}\",\"terminalState\":\"$terminalState\",\"errorCode\":\"${terminalCode ?: ""}\",\"traceCount\":${traces.size}}"
+                        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Valcrono diagnóstico JSON", json))
+                    }) { Text("Exportar JSON") }
+                    Button(onClick = { pendingLaunchPackage = pkg }) { Text("Reintentar") }
+                    Button(onClick = { fileDestination = FileDestination.ApkViewer(pkg.apkVirtualPath); destination = Destination.FILES }) { Text("Abrir APK") }
+                    Button(onClick = { destination = Destination.HOME }) { Text("Volver") }
+                }
             }
         }
     }

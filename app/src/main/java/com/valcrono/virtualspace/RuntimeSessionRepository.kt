@@ -167,12 +167,25 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
             launchPhase = "PREPARED",
             errorCode = null,
             sanitizedError = null,
+            terminalState = null,
+            terminalPhase = null,
+            terminalErrorCode = null,
+            terminalExceptionClass = null,
+            terminalErrorMessage = null,
+            terminalRootCauseClass = null,
+            terminalRootCauseMessage = null,
+            terminalStackTrace = null,
+            terminalTraceId = null,
+            failedAt = null,
         )
         db.runtime().upsert(row)
+        db.insertRuntimeLaunchTrace(sessionId, attemptId, null, pkg.packageName, pkg.virtualUserId, "STANDARD_ANDROID", "LAUNCH_REQUEST_CREATED", before?.state, "STARTING", true, metadataJson = "{\"activity\":\"$activity\"}")
         val reservedSlot = RuntimeSlotRepository(db, maxActiveApps).reserve(pkg.packageName, pkg.virtualUserId, sessionId, attemptId, now) ?: error("No hay procesos virtuales libres. diagnostics=" + allocatorDiagnostics(db.runtimeSlots().getAll()))
         logLaunch("SESSION_STARTING_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, before?.state, row.state)
         db.launchTokens().upsert(VirtualLaunchTokenEntity(token, sessionId, attemptId, pkg.virtualUserId, pkg.packageName, activity, now, now + TOKEN_TTL_MS, null))
         logLaunch("TOKEN_INSERTED", sessionId, attemptId, token, pkg.packageName, pkg.virtualUserId, null, null)
+        db.insertRuntimeLaunchTrace(sessionId, attemptId, reservedSlot.slotId.name, pkg.packageName, pkg.virtualUserId, "STANDARD_ANDROID", "SLOT_RESERVED", "FREE", "PROCESS_STARTING", true)
+        db.insertRuntimeLaunchTrace(sessionId, attemptId, reservedSlot.slotId.name, pkg.packageName, pkg.virtualUserId, "STANDARD_ANDROID", "PROCESS_START_REQUESTED", "PROCESS_STARTING", "PROCESS_STARTING", true)
         val reservedEntity = db.runtimeSlots().get(reservedSlot.slotId.name) ?: error("Reserva perdida después de SLOT_RESERVED")
         PreparedLaunch(sessionId, attemptId, token, true, reservedSlot.slotId, reservedEntity.reservationToken.orEmpty(), reservedEntity.runtimeGeneration ?: RuntimeHostRegistry.runtimeGeneration, reservedEntity.slotEpoch)
     }

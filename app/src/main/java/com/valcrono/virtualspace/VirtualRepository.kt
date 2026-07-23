@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17).enableMultiInstanceInvalidation().build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18).enableMultiInstanceInvalidation().build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
