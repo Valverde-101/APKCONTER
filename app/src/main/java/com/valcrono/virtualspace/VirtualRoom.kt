@@ -42,7 +42,46 @@ data class VirtualRuntimeSessionEntity(
     val processExitDetectedBy:String? = null,
     val lastHeartbeatSequence:Long = 0,
     val processStartElapsedRealtime:Long? = null,
+    val terminalState:String? = null,
+    val terminalPhase:String? = null,
+    val terminalErrorCode:String? = null,
+    val terminalExceptionClass:String? = null,
+    val terminalErrorMessage:String? = null,
+    val terminalRootCauseClass:String? = null,
+    val terminalRootCauseMessage:String? = null,
+    val terminalStackTrace:String? = null,
+    val terminalTraceId:String? = null,
+    val failedAt:Long? = null,
 )
+
+@Entity(tableName = "runtime_launch_traces", indices = [Index(value = ["sessionId"]), Index(value = ["launchAttemptId"]), Index(value = ["packageName", "virtualUserId", "timestampWallClock"])])
+data class RuntimeLaunchTraceEntity(
+    @PrimaryKey val traceId:String,
+    val sessionId:String,
+    val launchAttemptId:String,
+    val slotId:String?,
+    val packageName:String,
+    val virtualUserId:Int,
+    val runtimeEngine:String,
+    val phase:String,
+    val stateBefore:String?,
+    val stateAfter:String?,
+    val pid:Int?,
+    val processName:String?,
+    val threadName:String,
+    val timestampWallClock:Long,
+    val timestampElapsedRealtime:Long,
+    val durationMs:Long,
+    val success:Boolean,
+    val errorCode:String?,
+    val exceptionClass:String?,
+    val exceptionMessage:String?,
+    val rootCauseClass:String?,
+    val rootCauseMessage:String?,
+    val stackTraceSanitized:String?,
+    val metadataJson:String
+)
+
 @Entity(tableName = "virtual_shared_permissions", primaryKeys = ["packageName", "virtualUserId", "permission"])
 data class VirtualSharedPermissionEntity(val packageName:String,val virtualUserId:Int,val permission:String,val grantedAt:Long,val grantedBy:String)
 @Entity(tableName = "virtual_fs_access_log", primaryKeys = ["id"])
@@ -115,7 +154,8 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("UPDATE runtime_slots SET taskId=:taskId, activityInstanceId=:activityInstanceId, activityLastAttachedAt=:now, activityAttached=1, hostPid=:pid, binderAlive=1, binderGeneration=binderGeneration+1 WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun markActivityAttached(slotId:String, sessionId:String, taskId:Int, activityInstanceId:String, now:Long, pid:Int): Int
     @Query("UPDATE runtime_slots SET activityAttached=0 WHERE slotId=:slotId AND sessionId=:sessionId AND activityInstanceId=:activityInstanceId") suspend fun markActivityDetached(slotId:String, sessionId:String, activityInstanceId:String): Int
     @Query("UPDATE runtime_slots SET taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0 WHERE slotId=:slotId AND sessionId=:sessionId") suspend fun clearActivityTask(slotId:String, sessionId:String): Int
-    @Query("UPDATE runtime_slots SET state='CRASHED', errorCode=:code, errorMessage=:message, stoppedAt=:now WHERE slotId=:slotId") suspend fun markCrashed(slotId:String, code:String, message:String?, now:Long): Int
+    @Query("UPDATE runtime_slots SET state='FAILED', hostPid=COALESCE(hostPid,:pid), errorCode=:code, errorMessage=:message, stoppedAt=:now, lastMutationReason='FAILED', lastMutationCaller='markFatal', lastMutationElapsed=:elapsed WHERE slotId=:slotId") suspend fun markCrashed(slotId:String, code:String, message:String?, now:Long, elapsed:Long, pid:Int): Int
+    @Query("UPDATE runtime_slots SET hostPid=:pid, processName=:processName, startedAt=COALESCE(startedAt,:now), lastHeartbeatAt=:now, lastHeartbeatElapsedRealtime=:elapsed, lastHeartbeatWallClock=:now, lastMutationReason='PROCESS_CREATED', lastMutationCaller='RuntimeProcessService.onCreate', lastMutationElapsed=:elapsed WHERE slotId=:slotId AND state != 'FREE'") suspend fun recordProcessCreated(slotId:String, pid:Int, processName:String, now:Long, elapsed:Long): Int
     @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, reservationToken=NULL, runtimeGeneration=NULL, reservedAtElapsed=NULL, startupDeadlineElapsed=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason='RELEASE', lastReclaimAt=:now, lastMutationReason='SLOT_RELEASED', lastMutationCaller='release', lastMutationElapsed=:elapsed WHERE slotId=:slotId") suspend fun release(slotId:String, now:Long, elapsed:Long): Int
     @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, reservationToken=NULL, runtimeGeneration=NULL, reservedAtElapsed=NULL, startupDeadlineElapsed=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason=:reason, lastReclaimAt=:now, lastMutationReason='SLOT_NORMALIZED_FREE', lastMutationCaller=:reason, lastMutationElapsed=:elapsed WHERE (sessionId IS NULL AND packageName IS NULL AND launchAttemptId IS NULL AND state != 'FREE') OR (state='FREE' AND errorCode IS NOT NULL)") suspend fun normalizeEmptySlots(reason:String, now:Long, elapsed:Long): Int
     @Query("UPDATE runtime_slots SET state='FREE', packageName=NULL, virtualUserId=NULL, sessionId=NULL, launchAttemptId=NULL, reservationToken=NULL, runtimeGeneration=NULL, reservedAtElapsed=NULL, startupDeadlineElapsed=NULL, hostPid=NULL, assignedAt=NULL, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=:now, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, taskId=NULL, activityInstanceId=NULL, activityLastAttachedAt=NULL, activityAttached=0, binderAlive=0, reclaimInProgress=0, lastReclaimReason='STALE_HEARTBEAT', lastReclaimAt=:now, lastMutationReason='SLOT_RECLAIMED', lastMutationCaller='recoverStaleSlots', lastMutationElapsed=:now WHERE state IN ('ACTIVE_FOREGROUND','ACTIVE_BACKGROUND','PAUSED_BY_USER','CRASHED','ERROR') AND COALESCE(lastHeartbeatElapsedRealtime,lastHeartbeatAt,0) < :deadline") suspend fun recoverStaleSlots(deadline:Long, now:Long): Int
@@ -148,6 +188,13 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("SELECT COUNT(*) FROM virtual_messages WHERE receiverPackage=:pkg AND virtualUserId=:userId AND status=:status") suspend fun countByStatus(pkg:String,userId:Int,status:String): Int
     @Query("SELECT * FROM virtual_messages WHERE (receiverPackage=:pkg OR senderPackage=:pkg) AND virtualUserId=:userId ORDER BY createdAt DESC LIMIT 1") suspend fun lastForPackage(pkg:String,userId:Int): VirtualMessageEntity?
 }
+@Dao interface RuntimeLaunchTraceDao {
+    @Insert suspend fun insertTrace(trace: RuntimeLaunchTraceEntity)
+    @Query("SELECT * FROM runtime_launch_traces WHERE launchAttemptId=:launchAttemptId ORDER BY timestampElapsedRealtime ASC") suspend fun getForAttempt(launchAttemptId:String): List<RuntimeLaunchTraceEntity>
+    @Query("SELECT * FROM runtime_launch_traces WHERE sessionId=:sessionId ORDER BY timestampElapsedRealtime ASC") suspend fun getForSession(sessionId:String): List<RuntimeLaunchTraceEntity>
+    @Query("SELECT * FROM runtime_launch_traces WHERE packageName=:packageName AND virtualUserId=:virtualUserId ORDER BY timestampWallClock DESC LIMIT 1") suspend fun getLastForPackage(packageName:String, virtualUserId:Int): RuntimeLaunchTraceEntity?
+    @Query("DELETE FROM runtime_launch_traces WHERE timestampWallClock < :cutoffWallClock") suspend fun deleteOlderThan(cutoffWallClock:Long): Int
+}
 @Dao interface VirtualRuntimeDao {
     @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity)
     @Query("SELECT * FROM virtual_runtime_sessions ORDER BY lastActivityAt DESC") fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>>
@@ -157,17 +204,19 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("SELECT * FROM virtual_runtime_sessions WHERE state='STARTING' AND lastHeartbeatAt < :deadline") suspend fun staleStarting(deadline:Long): List<VirtualRuntimeSessionEntity>
     @Query("SELECT * FROM virtual_runtime_sessions WHERE state IN ('ACTIVE','PAUSED')") suspend fun resumableSessions(): List<VirtualRuntimeSessionEntity>
     @Query("UPDATE virtual_runtime_sessions SET launchPhase=:phase,lastHeartbeatAt=:now,lastActivityAt=:now WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId AND state='STARTING'") suspend fun heartbeat(sessionId:String,attemptId:String,phase:String,now:Long): Int
+    @Query("UPDATE virtual_runtime_sessions SET hostPid=:pid, processStartElapsedRealtime=:elapsed, startedAt=COALESCE(startedAt,:now), lastHeartbeatAt=:now, lastActivityAt=:now WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId") suspend fun recordProcessStarted(sessionId:String, attemptId:String, pid:Int, now:Long, elapsed:Long): Int
     @Query("UPDATE virtual_runtime_sessions SET state='ACTIVE',launchPhase='STATE_RECONCILED',lastActivityAt=:now,lastHeartbeatAt=:now,hostPid=:pid,classLoaderState='LOADED',hasReachedActiveAck=1,lastActiveAtElapsed=:elapsed,errorCode=NULL,sanitizedError=NULL WHERE sessionId=:sessionId") suspend fun repairActive(sessionId:String,now:Long,elapsed:Long,pid:Int): Int
     @Query("UPDATE virtual_runtime_sessions SET state=CASE WHEN :slotState IN ('ACTIVE_FOREGROUND','ACTIVE_BACKGROUND') THEN 'ACTIVE' ELSE state END, launchPhase=:phase, lastHeartbeatAt=:now, lastActivityAt=CASE WHEN :slotState IN ('ACTIVE_FOREGROUND','ACTIVE_BACKGROUND') THEN :now ELSE lastActivityAt END, hostPid=:pid, classLoaderState='LOADED', hasReachedActiveAck=1, lastActiveAtElapsed=:elapsed, lastHeartbeatSequence=lastHeartbeatSequence+1, errorCode=NULL, sanitizedError=NULL WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId AND hasReachedActiveAck=1") suspend fun heartbeatRuntimeSession(sessionId:String, attemptId:String, slotState:String, phase:String, now:Long, elapsed:Long, pid:Int): Int
     @Query("UPDATE virtual_runtime_sessions SET state='ACTIVE',launchPhase='RESUMED',startedAt=COALESCE(startedAt,:now),lastActivityAt=:now,lastHeartbeatAt=:now,hostPid=:pid,classLoaderState='LOADED',hasReachedActiveAck=1,firstActiveAtElapsed=COALESCE(firstActiveAtElapsed,:elapsed),lastActiveAtElapsed=:elapsed,errorCode=NULL,sanitizedError=NULL WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId AND state='STARTING'") suspend fun acknowledgeActive(sessionId:String,attemptId:String,now:Long,elapsed:Long,pid:Int): Int
-    @Query("UPDATE virtual_runtime_sessions SET state=CASE WHEN hasReachedActiveAck=1 AND :state IN ('DEAD','ERROR','CRASHED') THEN 'STOPPED' ELSE :state END,launchPhase=:phase,lastActivityAt=:now,lastHeartbeatAt=:now,stoppedAt=CASE WHEN :state IN ('STOPPED','ERROR','DEAD','CRASHED') THEN :now ELSE stoppedAt END,errorCode=CASE WHEN hasReachedActiveAck=1 AND :state IN ('DEAD','ERROR','CRASHED') THEN NULL ELSE :errorCode END,sanitizedError=CASE WHEN hasReachedActiveAck=1 AND :state IN ('DEAD','ERROR','CRASHED') THEN NULL ELSE :error END,lastRuntimeExitReason=CASE WHEN hasReachedActiveAck=1 AND :state IN ('DEAD','ERROR','CRASHED','STOPPED') THEN :phase ELSE lastRuntimeExitReason END,processExitDetectedBy=CASE WHEN hasReachedActiveAck=1 AND :state IN ('DEAD','ERROR','CRASHED') THEN :phase ELSE processExitDetectedBy END WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId") suspend fun compareAndSetState(sessionId:String,attemptId:String,state:String,phase:String,now:Long,errorCode:String?,error:String?): Int
+    @Query("UPDATE virtual_runtime_sessions SET state=:state,launchPhase=:phase,lastActivityAt=:now,lastHeartbeatAt=:now,stoppedAt=CASE WHEN :state IN ('STOPPED','FAILED','ERROR','DEAD','CRASHED') THEN :now ELSE stoppedAt END,errorCode=:errorCode,sanitizedError=:error,lastRuntimeExitReason=CASE WHEN :state IN ('DEAD','FAILED','ERROR','CRASHED','STOPPED') THEN :phase ELSE lastRuntimeExitReason END,processExitDetectedBy=CASE WHEN :state IN ('DEAD','FAILED','ERROR','CRASHED') THEN :phase ELSE processExitDetectedBy END,terminalState=CASE WHEN :state IN ('FAILED','ERROR','CRASHED') THEN :state ELSE terminalState END,terminalPhase=CASE WHEN :state IN ('FAILED','ERROR','CRASHED') THEN :phase ELSE terminalPhase END,terminalErrorCode=CASE WHEN :state IN ('FAILED','ERROR','CRASHED') THEN :errorCode ELSE terminalErrorCode END,terminalErrorMessage=CASE WHEN :state IN ('FAILED','ERROR','CRASHED') THEN :error ELSE terminalErrorMessage END,failedAt=CASE WHEN :state IN ('FAILED','ERROR','CRASHED') THEN :now ELSE failedAt END WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId AND NOT (terminalState IN ('FAILED','ERROR','CRASHED') AND :state='STOPPED')") suspend fun compareAndSetState(sessionId:String,attemptId:String,state:String,phase:String,now:Long,errorCode:String?,error:String?): Int
+    @Query("UPDATE virtual_runtime_sessions SET state=:terminalState, launchPhase=:terminalPhase, lastActivityAt=:now, lastHeartbeatAt=:now, stoppedAt=:now, hostPid=COALESCE(hostPid,:pid), classLoaderState=CASE WHEN :terminalState='FAILED' THEN 'FAILED' ELSE classLoaderState END, errorCode=:errorCode, sanitizedError=:errorMessage, terminalState=:terminalState, terminalPhase=:terminalPhase, terminalErrorCode=:errorCode, terminalExceptionClass=:exceptionClass, terminalErrorMessage=:errorMessage, terminalRootCauseClass=:rootCauseClass, terminalRootCauseMessage=:rootCauseMessage, terminalStackTrace=:stackTrace, terminalTraceId=:traceId, failedAt=:now WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId") suspend fun markTerminalFailure(sessionId:String, attemptId:String, terminalState:String, terminalPhase:String, now:Long, pid:Int?, errorCode:String?, exceptionClass:String?, errorMessage:String?, rootCauseClass:String?, rootCauseMessage:String?, stackTrace:String?, traceId:String?): Int
     @Query("UPDATE virtual_runtime_sessions SET state='ERROR',launchPhase='TIMEOUT',stoppedAt=:now,lastActivityAt=:now,errorCode='ERROR_START_TIMEOUT',sanitizedError='La aplicación tardó más de 30 segundos en iniciar. Puedes reintentar.',classLoaderState='FAILED' WHERE sessionId=:sessionId AND currentLaunchAttemptId=:attemptId AND state='STARTING' AND lastHeartbeatAt < :deadline") suspend fun timeoutLaunch(sessionId:String,attemptId:String,deadline:Long,now:Long): Int
     @Query("UPDATE virtual_runtime_sessions SET state='ERROR',launchPhase='STALE',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode='ERROR_STALE_STARTING',sanitizedError='Inicio anterior limpiado al abrir VirtualSpace. Puedes reintentar.',classLoaderState='FAILED' WHERE state='STARTING'") suspend fun markStaleStarting(now:Long)
-    @Query("UPDATE virtual_runtime_sessions SET state='DEAD',launchPhase='PROCESS_LOST',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode='STOPPED_PROCESS_LOST',sanitizedError='El proceso anterior ya no existe.' WHERE state IN ('ACTIVE','PAUSED')") suspend fun markProcessLost(now:Long)
+    @Query("UPDATE virtual_runtime_sessions SET state='CRASHED',launchPhase='PROCESS_LOST',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode='PROCESS_DIED',sanitizedError='El proceso anterior ya no existe.',terminalState='CRASHED',terminalPhase='PROCESS_LOST',terminalErrorCode='PROCESS_DIED',terminalErrorMessage='El proceso anterior ya no existe.',failedAt=:now WHERE state IN ('ACTIVE','PAUSED') AND terminalState IS NULL") suspend fun markProcessLost(now:Long)
     @Query("DELETE FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId AND sessionId != :keepSessionId") suspend fun deleteDuplicatesFor(packageName:String,userId:Int,keepSessionId:String)
     @Query("DELETE FROM virtual_runtime_sessions WHERE sessionId=:sessionId") suspend fun deleteSession(sessionId:String)
     @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVE'") suspend fun activeCount(): Int
-    @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase=:phase,stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,hostPid=NULL,classLoaderState='UNKNOWN',errorCode=NULL,sanitizedError=NULL WHERE packageName=:packageName AND state != 'STOPPED'") suspend fun markPackageStopped(packageName:String, now:Long, phase:String): Int
+    @Query("UPDATE virtual_runtime_sessions SET state=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN state ELSE 'STOPPED' END,launchPhase=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN launchPhase ELSE :phase END,stoppedAt=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN stoppedAt ELSE :now END,lastActivityAt=:now,lastHeartbeatAt=:now,hostPid=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN hostPid ELSE NULL END,classLoaderState=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN classLoaderState ELSE 'UNKNOWN' END,errorCode=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN errorCode ELSE NULL END,sanitizedError=CASE WHEN terminalState IN ('FAILED','ERROR','CRASHED') THEN sanitizedError ELSE NULL END WHERE packageName=:packageName AND state NOT IN ('STOPPED','FAILED','ERROR','CRASHED')") suspend fun markPackageStopped(packageName:String, now:Long, phase:String): Int
     @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase='STOPPED',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now WHERE state != 'STOPPED'") suspend fun stopAll(now:Long)
     @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase='STOPPED_BY_HOST',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode=NULL,sanitizedError=NULL,lastRuntimeExitReason='STOPPED_BY_HOST',processExitDetectedBy='HOST_REMOVED_FROM_RECENTS' WHERE state != 'STOPPED'") suspend fun stopAllByHost(now:Long): Int
 }
@@ -183,7 +232,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=17, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class,RuntimeLaunchTraceEntity::class], version=18, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
@@ -197,6 +246,7 @@ abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun fsAccessLog(): VirtualFsAccessLogDao
     abstract fun launchTokens(): VirtualLaunchTokenDao
     abstract fun runtimeSlots(): RuntimeSlotDao
+    abstract fun runtimeLaunchTraces(): RuntimeLaunchTraceDao
 }
 
 
@@ -284,5 +334,27 @@ val MIGRATION_16_17 = object : Migration(16, 17) {
         add("ALTER TABLE virtual_packages ADD COLUMN apkRepairCount INTEGER NOT NULL DEFAULT 0")
         db.execSQL("UPDATE virtual_packages SET apkVirtualPath='/data/app/' || packageName || '/base.apk' WHERE apkVirtualPath=''")
         db.execSQL("UPDATE virtual_packages SET apkLastVerifiedAt=lastVerifiedAt WHERE apkLastVerifiedAt IS NULL AND lastVerifiedAt IS NOT NULL")
+    }
+}
+
+
+val MIGRATION_17_18 = object : Migration(17, 18) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        fun add(sql: String) = runCatching { db.execSQL(sql) }
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalState TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalPhase TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalErrorCode TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalExceptionClass TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalErrorMessage TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalRootCauseClass TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalRootCauseMessage TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalStackTrace TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN terminalTraceId TEXT")
+        add("ALTER TABLE virtual_runtime_sessions ADD COLUMN failedAt INTEGER")
+        db.execSQL("CREATE TABLE IF NOT EXISTS runtime_launch_traces (traceId TEXT NOT NULL, sessionId TEXT NOT NULL, launchAttemptId TEXT NOT NULL, slotId TEXT, packageName TEXT NOT NULL, virtualUserId INTEGER NOT NULL, runtimeEngine TEXT NOT NULL, phase TEXT NOT NULL, stateBefore TEXT, stateAfter TEXT, pid INTEGER, processName TEXT, threadName TEXT NOT NULL, timestampWallClock INTEGER NOT NULL, timestampElapsedRealtime INTEGER NOT NULL, durationMs INTEGER NOT NULL, success INTEGER NOT NULL, errorCode TEXT, exceptionClass TEXT, exceptionMessage TEXT, rootCauseClass TEXT, rootCauseMessage TEXT, stackTraceSanitized TEXT, metadataJson TEXT NOT NULL, PRIMARY KEY(traceId))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_runtime_launch_traces_sessionId ON runtime_launch_traces(sessionId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_runtime_launch_traces_launchAttemptId ON runtime_launch_traces(launchAttemptId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_runtime_launch_traces_packageName_virtualUserId_timestampWallClock ON runtime_launch_traces(packageName, virtualUserId, timestampWallClock)")
+        db.execSQL("UPDATE virtual_runtime_sessions SET terminalState=state, terminalPhase=launchPhase, terminalErrorCode=errorCode, terminalErrorMessage=sanitizedError, failedAt=stoppedAt WHERE state IN ('ERROR','CRASHED') OR errorCode IS NOT NULL")
     }
 }
