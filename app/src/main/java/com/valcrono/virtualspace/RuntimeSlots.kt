@@ -9,6 +9,7 @@ import android.os.Debug
 import android.os.IBinder
 import android.os.Process
 import android.os.SystemClock
+import android.view.View
 import com.valcrono.core.VLog
 import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
@@ -236,6 +237,7 @@ open class RuntimeProcessService : Service() {
     inner class RuntimeBinder : Binder() {
         fun startSession(request: RuntimeLaunchRequest): RuntimeIpcResult = this@RuntimeProcessService.startSession(request)
         fun attachUi(sessionId: String, callback: RuntimeUiCallback? = null): RuntimeContentResult = this@RuntimeProcessService.attachUi(sessionId, callback)
+        fun attachGuestView(sessionId: String, host: Activity): View? = this@RuntimeProcessService.attachGuestView(sessionId, host)
         fun detachUi(sessionId: String): RuntimeIpcResult = this@RuntimeProcessService.detachUi(sessionId)
         fun bringToForeground(sessionId: String): RuntimeIpcResult = checkSession(sessionId).also { if (it.success) setForegroundState() }
         fun getCurrentContent(sessionId: String): RuntimeContentResult = cachedContentResult(sessionId)
@@ -268,16 +270,19 @@ open class RuntimeProcessService : Service() {
         state = RuntimeSlotState.LOAD_REQUEST_SENT; lastPhase = "LOAD_REQUEST_SENT"; runBlocking { RuntimeSlotLocks.mutex(slotId.name).withLock { repository.db.runtimeSlots().compareAndSetOwnedState(slotId.name, "SERVICE_CONNECTED", "LOAD_REQUEST_SENT", req.sessionId, req.launchAttemptId, req.reservationToken, "LOAD_REQUEST_SENT", "startSession", SystemClock.elapsedRealtime()); repository.db.runtime().heartbeat(req.sessionId, req.launchAttemptId, lastPhase, System.currentTimeMillis()) } }
         val pkg = runBlocking { repository.getPackage(req.virtualPackageName, req.virtualUserId) } ?: error("PACKAGE_NOT_REGISTERED")
         require(pkg.enabled && !pkg.damaged) { "PACKAGE_DISABLED_OR_DAMAGED" }
-        require(runBlocking { repository.verifyPackage(pkg) }) { "APK_HASH_MISMATCH" }
-        lastPhase = "APK_VERIFIED"; runBlocking { repository.db.runtime().heartbeat(req.sessionId, req.launchAttemptId, lastPhase, System.currentTimeMillis()) }
-        adapter = runtimeAdapterFor(pkg); running = adapter!!.start(pkg); cachedContent = running!!.createContent(); cachedContentVersion++; cachedAt = System.currentTimeMillis()
+        val resolvedApk = runBlocking { ApkPathResolver(applicationContext, repository.db).resolve(pkg) }
+        val launchPkg = pkg.copy(apkInternalPath = resolvedApk.file.absolutePath, importedApkPath = resolvedApk.file.absolutePath)
+        lastPhase = resolvedApk.code; runBlocking { repository.db.runtime().heartbeat(req.sessionId, req.launchAttemptId, lastPhase, System.currentTimeMillis()) }
+        adapter = runtimeAdapterFor(launchPkg); running = adapter!!.start(launchPkg); cachedContent = running!!.createContent(); cachedContentVersion++; cachedAt = System.currentTimeMillis()
         runBlocking { repository.db.launchTokens().consume(req.launchToken, System.currentTimeMillis()) }
-        val mem2 = currentSlotMemorySnapshot(); state = RuntimeSlotState.CLASSLOADER_READY; lastPhase = "CLASSLOADER_READY"
-        runBlocking { RuntimeSlotLocks.mutex(slotId.name).withLock { repository.db.runtimeSlots().compareAndSetOwnedState(slotId.name, "LOAD_REQUEST_SENT", "CLASSLOADER_READY", req.sessionId, req.launchAttemptId, req.reservationToken, "CLASSLOADER_READY", "startSession", SystemClock.elapsedRealtime()) } }
-        val ack = acknowledgeRuntimeActive(req, mem2)
-        state = RuntimeSlotState.ACTIVE_BACKGROUND
-        require(ack.sessionChanged == 1 && ack.slotChanged == 1) { "ACTIVE_ACK_REJECTED sessionChanged=${ack.sessionChanged} slotChanged=${ack.slotChanged} attemptId=${req.launchAttemptId}" }
-        startHeartbeatLoop()
+        val mem2 = currentSlotMemorySnapshot(); state = RuntimeSlotState.ACTIVITY_STARTING; lastPhase = "ACTIVITY_STARTING"
+        runBlocking { RuntimeSlotLocks.mutex(slotId.name).withLock { repository.db.runtimeSlots().compareAndSetOwnedState(slotId.name, "LOAD_REQUEST_SENT", "ACTIVITY_STARTING", req.sessionId, req.launchAttemptId, req.reservationToken, "ACTIVITY_STARTING", "startSession", SystemClock.elapsedRealtime()) } }
+        if (running !is GenericRunningVirtualApplication) {
+            val ack = acknowledgeRuntimeActive(req, mem2)
+            state = RuntimeSlotState.ACTIVE_BACKGROUND
+            require(ack.sessionChanged == 1 && ack.slotChanged == 1) { "ACTIVE_ACK_REJECTED sessionChanged=${ack.sessionChanged} slotChanged=${ack.slotChanged} attemptId=${req.launchAttemptId}" }
+            startHeartbeatLoop()
+        }
         startMessageDispatcher(req)
         RuntimeIpcResult(true)
     }
@@ -288,6 +293,7 @@ open class RuntimeProcessService : Service() {
         else -> error("RUNTIME_MODE_NOT_EXECUTABLE:${pkg.runtimeMode}")
     }
 
+    private fun attachGuestView(sessionId: String, host: Activity): View? { val checked = checkSession(sessionId); if (!checked.success) return null; val r = running; if (r is GenericRunningVirtualApplication && host is BaseRuntimeProxyActivity) { host.genericContext = r.context; host.genericApplication = r.application; host.genericPhases.clear(); host.genericPhases.addAll(r.phases); val v = adapter?.attachGuestView(host, r); if (host.genericPhases.contains("GUEST_ACTIVITY_RESUMED")) { lastPhase = "GUEST_ACTIVITY_RESUMED"; request?.let { req -> val mem = currentSlotMemorySnapshot(); val ack = acknowledgeRuntimeActive(req, mem); state = RuntimeSlotState.ACTIVE_BACKGROUND; require(ack.sessionChanged == 1 && ack.slotChanged == 1) { "ACTIVE_ACK_REJECTED sessionChanged=${ack.sessionChanged} slotChanged=${ack.slotChanged} attemptId=${req.launchAttemptId}" }; startHeartbeatLoop() } }; return v }; return null }
     private fun attachUi(sessionId: String, callback: RuntimeUiCallback? = null): RuntimeContentResult { val checked = checkSession(sessionId); if (!checked.success) return RuntimeContentResult(checked); uiCallback = callback; uiAttached = true; transitionUi(RuntimeUiLifecycleState.ATTACHED_FOREGROUND); heartbeat(); return RuntimeContentResult(RuntimeIpcResult(true), cachedContent ?: createAndCacheInitialContent()) }
     // Warm resume still returns cachedContent ?: running?.createContent() semantics before caching under the mutex.
     private fun createAndCacheInitialContent(): VirtualContent? = runBlocking { runtimeMutex.withLock { running?.createContent()?.also { cachedContent = it; cachedContentVersion++; cachedAt = System.currentTimeMillis() } } }
