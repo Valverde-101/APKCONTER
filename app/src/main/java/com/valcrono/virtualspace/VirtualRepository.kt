@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16).enableMultiInstanceInvalidation().build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17).enableMultiInstanceInvalidation().build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -23,6 +23,7 @@ object DatabaseProvider {
 class VirtualRepository(private val context: Context) {
     val db: ValcronoDatabase = DatabaseProvider.get(context)
     private val storage = VirtualStorageManager(context.filesDir)
+    val apkArtifacts = ApkArtifactRepository(context.applicationContext, db)
     fun packages(): Flow<List<VirtualPackageEntity>> = db.packages().observePackages()
     fun sessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
     suspend fun getPackage(packageName: String, userId: Int) = db.packages().getPackage(packageName, userId)
@@ -30,7 +31,7 @@ class VirtualRepository(private val context: Context) {
         db.packages().getAll().forEach { pkg -> runCatching { reprocessImportedPackage(pkg) }.onFailure { VLog.e("Repository", "reprocess failed package=${pkg.packageName}: ${it.message}", it) } }
     }
     private suspend fun reprocessImportedPackage(pkg: VirtualPackageEntity) {
-        val apk = File(pkg.apkInternalPath).takeIf { it.isFile } ?: return
+        val apk = runCatching { apkArtifacts.resolveVerified(pkg).file }.getOrNull() ?: return
         val parsed = AndroidArchivePackageParser(context).parse(apk)
         val archive = ApkArchiveReaderV1.read(apk)
         val classification = classifyRuntime(parsed, archive, parsed.entryPointClass != null, emptyList())
@@ -50,12 +51,17 @@ class VirtualRepository(private val context: Context) {
         db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, now, "CREATED", null))
         return try {
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "VALIDATING", null))
-            val registry = linkedMapOf<String, VirtualPackage>()
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "COPYING", null))
-            val imported = SecureApkImporter(storage, registry).importApk(apk, userId, metadataOverride = metadata.toImporterMetadata(apk))
+            val sourceSha = apk.inputStream().use { Sha256.hex(it) }
+            val existing = db.packages().getPackage(metadata.packageName, userId)
+            val virtualUid = existing?.virtualUid ?: 100000 + db.packages().count()
+            val installTime = existing?.installTime ?: now
+            val provisional = VirtualPackageEntity(metadata.packageName, metadata.label, metadata.versionCode, metadata.versionName, metadata.minSdk, metadata.targetSdk, sourceSha, apk.absolutePath, installTime, now, metadata.primaryAbi, metadata.hasNativeLibraries, metadata.mainActivity, metadata.entryPointClass, CompatibilityLevel.COMPATIBLE.name, true, false, userId, virtualUid)
+            val artifact = apkArtifacts.importCanonical(apk, provisional)
+            val imported = VirtualPackage(metadata.packageName, metadata.label, metadata.versionCode, metadata.versionName, metadata.minSdk, metadata.targetSdk, sourceSha, artifact.file.absolutePath, installTime, now, metadata.primaryAbi, metadata.hasNativeLibraries, metadata.mainActivity, CompatibilityLevel.COMPATIBLE, true, userId, virtualUid)
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "ANALYZING", null))
             val runtimeMode = if (metadata.entryPointClass != null) "COOPERATIVE" else "INSPECTION_ONLY"
-            val entity = VirtualPackageEntity(metadata.packageName, metadata.label, metadata.versionCode, metadata.versionName, metadata.minSdk, metadata.targetSdk, imported.sha256, imported.apkInternalPath, imported.installTime, imported.updateTime, metadata.primaryAbi, metadata.hasNativeLibraries, metadata.mainActivity, metadata.entryPointClass, imported.compatibilityLevel.name, true, false, userId, imported.virtualUid, runtimeMode)
+            val entity = VirtualPackageEntity(metadata.packageName, metadata.label, metadata.versionCode, metadata.versionName, metadata.minSdk, metadata.targetSdk, imported.sha256, imported.apkInternalPath, imported.installTime, imported.updateTime, metadata.primaryAbi, metadata.hasNativeLibraries, metadata.mainActivity, metadata.entryPointClass, imported.compatibilityLevel.name, true, false, userId, imported.virtualUid, runtimeMode, apkVirtualPath = apkArtifacts.virtualPath(metadata.packageName), apkIntegrityState = APK_INTEGRITY_VERIFIED, apkLastVerifiedAt = System.currentTimeMillis())
             db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, System.currentTimeMillis(), "REGISTERING", null))
             db.packages().upsertPackage(entity)
             db.components().upsertAll(metadata.components.map { VirtualComponentEntity(metadata.packageName, userId, it.name, it.type.name, it.exported, it.processName) })
@@ -88,7 +94,7 @@ class VirtualRepository(private val context: Context) {
         )
     }
 
-    suspend fun verifyPackage(pkg: VirtualPackageEntity): Boolean { val ok = File(pkg.apkInternalPath).isFile && File(pkg.apkInternalPath).inputStream().use { Sha256.hex(it) } == pkg.sha256; if(!ok) db.packages().markDamaged(pkg.packageName,pkg.virtualUserId); return ok }
+    suspend fun verifyPackage(pkg: VirtualPackageEntity): Boolean = runCatching { apkArtifacts.resolveVerified(pkg); true }.getOrDefault(false)
     fun storage() = storage
 }
 
