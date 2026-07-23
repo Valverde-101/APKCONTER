@@ -338,7 +338,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Box(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                         when (destination) {
                             Destination.HOME -> HomeScreen(packages, snapshot, settings, sessions)
-                            Destination.APPS -> AppsScreen(packages, sessions, runtimeSlots)
+                            Destination.APPS -> AppsScreen(packages)
                             Destination.FILES -> GlobalFileDestination(packages, settings)
                             Destination.PROCESSES -> ProcessScreen(snapshot, packages, settings, sessions)
                             Destination.SETTINGS -> SettingsScreen(settings, packages)
@@ -390,7 +390,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     @Composable
-    private fun AppsScreen(packages: List<VirtualPackageEntity>, sessions: List<VirtualRuntimeSessionEntity>, slots: List<RuntimeSlotEntity>) {
+    private fun AppsScreen(packages: List<VirtualPackageEntity>) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -399,12 +399,14 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Button(onClick = { destination = Destination.PROCESSES }, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text("Procesos") }
                 }
             }
-            items(packages) { pkg -> val session = sessions.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }; AppCard(pkg, RuntimeAppUiState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }, deriveRuntimeEffectiveState(session, session?.sessionId?.let { sid -> slots.firstOrNull { it.sessionId == sid } }))) }
+            items(packages) { pkg -> AppCard(pkg) }
         }
     }
 
     @Composable
-    private fun AppCard(pkg: VirtualPackageEntity, runtimeUiState: RuntimeAppUiState) {
+    private fun AppCard(pkg: VirtualPackageEntity) {
+        val runtimeStateFlow = remember(pkg.packageName, pkg.virtualUserId) { runtimeSessions.observeRuntimeAppState(pkg.packageName, pkg.virtualUserId) }
+        val runtimeUiState by runtimeStateFlow.collectAsState(initial = RuntimeAppUiState(null, null, null, DisplayedAppState.CHECKING_RUNTIME, runtimeActive = false, activityVisible = false, isRefreshing = true))
         val session = runtimeUiState.session
         val slot = runtimeUiState.slot
         var menuExpanded by remember { mutableStateOf(false) }
@@ -423,7 +425,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     }
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Estado: ${effectiveStateLabel(effectiveState)}")
+                    Text("Estado: ${displayedStateLabel(runtimeUiState.displayedState)}${if (runtimeUiState.isRefreshing) " · Verificando…" else ""}")
                     Text(runtimeSlotLabel(slot))
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
@@ -431,9 +433,9 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     if (pkg.compatibilityLevel == "COOPERATIVE_SUPPORTED" && pkg.entryPointClass != null) {
                         Button(
                             onClick = { openVirtual(pkg) },
-                            enabled = effectiveState != RuntimeEffectiveState.STARTING && pkg.enabled && !pkg.damaged,
+                            enabled = runtimeUiState.displayedState !in setOf(DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME, DisplayedAppState.STOPPING) && pkg.enabled && !pkg.damaged,
                             modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                        ) { Text(launchButtonLabel(effectiveState.name)) }
+                        ) { Text(launchButtonLabel(runtimeUiState.displayedState)) }
                     } else {
                         Text("APK disponible para inspección; runtime no compatible.")
                         Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
@@ -1183,12 +1185,20 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         RuntimeEffectiveState.STOPPED -> "Detenida"
     }
 
-    private fun launchButtonLabel(state: String): String = when (state) {
-        "STARTING" -> "Abriendo…"
-        "ACTIVE", "ACTIVE_FOREGROUND", "ACTIVE_BACKGROUND" -> "Volver a la app"
-        "PAUSED", "PAUSED_BY_USER" -> "Reanudar"
-        "ERROR", "CRASHED" -> "Reintentar"
-        else -> "Abrir"
+    private fun displayedStateLabel(state: DisplayedAppState): String = when (state) {
+        DisplayedAppState.ACTIVE_FOREGROUND -> "Activa"
+        DisplayedAppState.ACTIVE_BACKGROUND -> "Activa en segundo plano"
+        DisplayedAppState.STARTING -> "Abriendo…"
+        DisplayedAppState.STOPPING -> "Deteniendo…"
+        DisplayedAppState.CHECKING_RUNTIME -> "Verificando…"
+        DisplayedAppState.ERROR -> "Error"
+        DisplayedAppState.STOPPED -> "Detenida"
+    }
+
+    private fun launchButtonLabel(state: DisplayedAppState): String = when (state) {
+        DisplayedAppState.ACTIVE_FOREGROUND, DisplayedAppState.ACTIVE_BACKGROUND -> "Volver a la app"
+        DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME, DisplayedAppState.STOPPING -> "Abriendo…"
+        DisplayedAppState.ERROR, DisplayedAppState.STOPPED -> "Abrir"
     }
 
     private fun runtimeSlotLabel(slot: RuntimeSlotEntity?): String = if (slot != null) "Slot: ${slot.slotId} · PID: ${slot.hostPid ?: "—"} · PSS: ${formatBytes(slot.pssBytes ?: 0)}" else "RAM actual: 0 MB · Sin proceso activo"
