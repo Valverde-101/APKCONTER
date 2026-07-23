@@ -1,11 +1,14 @@
 package com.valcrono.virtualspace
 
+import android.app.Activity
 import android.content.Context
+import android.view.View
 import com.valcrono.runtime.VirtualContent
 
 interface VirtualRuntimeAdapter {
     fun start(pkg: VirtualPackageEntity): RunningVirtualApplication
     fun attachUi(sessionId: String): VirtualContent? = null
+    fun attachGuestView(host: Activity, running: RunningVirtualApplication): View? = null
     fun resume(sessionId: String) {}
     fun pause(sessionId: String) {}
     fun stop(sessionId: String) {}
@@ -39,4 +42,8 @@ class CooperativeRunningVirtualApplication(private val app: RunningVirtualApp) :
     override fun destroy() { app.entry.onDestroy() }
 }
 
-class GenericApkRuntimeAdapter(private val context: Context) : VirtualRuntimeAdapter by GenericRuntimeAdapter(context)
+class GenericApkRuntimeAdapter(private val context: Context) : VirtualRuntimeAdapter {
+    private val delegate = GenericRuntimeAdapter(context)
+    override fun start(pkg: VirtualPackageEntity): RunningVirtualApplication = delegate.start(pkg)
+    override fun attachGuestView(host: Activity, running: RunningVirtualApplication): View? = (running as? GenericRunningVirtualApplication)?.attachTo(host)
+}
