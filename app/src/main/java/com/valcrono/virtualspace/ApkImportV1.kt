@@ -57,6 +57,10 @@ class ApkImportCoordinatorV1(private val context: Context, private val repositor
             val finalEntity = imported.copy(
                 displayName = parsed.label,
                 importedApkPath = imported.apkInternalPath,
+                apkVirtualPath = repository.apkArtifacts.virtualPath(parsed.packageName),
+                apkArtifactVersion = APK_ARTIFACT_VERSION_CURRENT,
+                apkIntegrityState = APK_INTEGRITY_VERIFIED,
+                apkLastVerifiedAt = System.currentTimeMillis(),
                 originalFileName = original,
                 apkSizeBytes = copied.sizeBytes,
                 certificateSha256 = parsed.certificateSha256,
@@ -173,19 +177,18 @@ fun classifyRuntime(parsed: AndroidArchivePackageParser.AndroidParsedPackage, ar
 }
 
 class VirtualPackageStorageV1(private val filesDir: File) {
-    fun root(packageName: String): File {
+    fun root(packageName: String, virtualUserId: Int = 0): File {
         require(Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$").matches(packageName)) { "INVALID_PACKAGE_NAME" }
-        val base = File(filesDir, "virtual-packages").canonicalFile
+        val base = File(filesDir, "virtual-packages/users/$virtualUserId").canonicalFile
         val root = File(base, packageName).canonicalFile
         require(root.path == base.path || root.path.startsWith(base.path + File.separator)) { "PACKAGE_PATH_TRAVERSAL" }
         return root
     }
     fun writeMetadata(pkg: VirtualPackageEntity) {
-        val root = root(pkg.packageName)
+        val root = root(pkg.packageName, pkg.virtualUserId)
         listOf("apk", "data/files", "data/cache", "data/databases", "data/shared_prefs", "data/code_cache", "data/no_backup", "metadata", "temp", "logs").forEach { File(root, it).mkdirs() }
         val base = File(root, "apk/base.apk")
-        File(pkg.apkInternalPath).copyTo(base, overwrite = true)
-        base.setReadOnly()
+        if (!base.exists()) { File(pkg.apkInternalPath).copyTo(base, overwrite = true); base.setReadOnly() }
         val certificateJson = pkg.certificateSha256?.let { "\"${it.escapeJson()}\"" } ?: "null"
         File(root, "metadata/package.json").writeText("{\"packageName\":\"${pkg.packageName.escapeJson()}\",\"displayName\":\"${pkg.displayName.escapeJson()}\",\"versionCode\":${pkg.versionCode}}")
         File(root, "metadata/hashes.json").writeText("{\"sha256\":\"${pkg.sha256}\",\"certificateSha256\":$certificateJson}")
