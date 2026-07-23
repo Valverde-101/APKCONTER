@@ -52,6 +52,7 @@ class ApkImportCoordinatorV1(private val context: Context, private val repositor
                 signingCertificateSha256 = parsed.certificateSha256,
             )
             val (compat, issues) = CompatibilityScanner().scan(metadata)
+            val classification = classifyRuntime(parsed, archive, metadata.entryPointClass != null, issues.map { it.code })
             val imported = repository.importCopiedApk(copied.file, userId, parsed)
             val finalEntity = imported.copy(
                 displayName = parsed.label,
@@ -69,15 +70,20 @@ class ApkImportCoordinatorV1(private val context: Context, private val repositor
                 hasCustomApplication = parsed.applicationClassName != null,
                 applicationClassName = parsed.applicationClassName,
                 launcherActivityName = parsed.mainActivity,
+                cooperativeEntryPointClass = parsed.entryPointClass,
                 declaredActivitiesJson = parsed.components.filter { it.type == ComponentType.ACTIVITY }.map { it.name }.toJsonArray(),
                 declaredServicesJson = parsed.components.filter { it.type == ComponentType.SERVICE }.map { it.name }.toJsonArray(),
                 declaredReceiversJson = parsed.components.filter { it.type == ComponentType.RECEIVER }.map { it.name }.toJsonArray(),
                 declaredProvidersJson = parsed.components.filter { it.type == ComponentType.PROVIDER }.map { it.name }.toJsonArray(),
                 declaredPermissionsJson = emptyList<String>().toJsonArray(),
                 requestedPermissionsJson = parsed.permissions.map(VirtualPermission::name).toJsonArray(),
-                compatibilityLevel = if (archive.isSplitApk) "SPLIT_APK_UNSUPPORTED" else if (archive.nativeLibraryCount > 0 && metadata.entryPointClass == null) "REQUIRES_NATIVE_SUPPORT" else compat.toV1Level(metadata.entryPointClass != null),
-                compatibilityReasonsJson = issues.map { it.message }.ifEmpty { listOf("Aplicación simple sin código nativo", "targetSdk compatible") }.toJsonArray(),
-                importState = if ((if (archive.isSplitApk) "SPLIT_APK_UNSUPPORTED" else if (archive.nativeLibraryCount > 0 && metadata.entryPointClass == null) "REQUIRES_NATIVE_SUPPORT" else compat.toV1Level(metadata.entryPointClass != null)) in setOf("INCOMPATIBLE", "SPLIT_APK_UNSUPPORTED", "REQUIRES_NATIVE_SUPPORT")) "BLOCKED" else "READY",
+                importantIntentFiltersJson = parsed.intentFilters.map { "${it.componentName}:${it.actions.joinToString("|")}:${it.categories.joinToString("|")}" }.toJsonArray(),
+                compatibilityLevel = classification.compatibilityLevel,
+                runtimeMode = classification.runtimeMode,
+                genericRuntimeCapability = classification.genericRuntimeCapability,
+                compatibilityReasonsJson = classification.reasons.toJsonArray(),
+                blockingReasonsJson = classification.blockingReasons.toJsonArray(),
+                importState = classification.importState,
                 importedAt = imported.installTime,
                 updatedAt = System.currentTimeMillis(),
                 lastVerifiedAt = System.currentTimeMillis(),
@@ -134,6 +140,28 @@ object ApkArchiveReaderV1 {
         }
         return ApkArchiveFactsV1(dex, libs, abis.toList(), splits.isNotEmpty(), splits.toList())
     }
+}
+
+data class RuntimeClassification(val runtimeMode:String, val genericRuntimeCapability:String, val compatibilityLevel:String, val importState:String, val reasons:List<String>, val blockingReasons:List<String>)
+
+private fun classifyRuntime(parsed: AndroidArchivePackageParser.AndroidParsedPackage, archive: ApkArchiveFactsV1, cooperative: Boolean, scannerIssueCodes: List<String>): RuntimeClassification {
+    val deviceAbis = android.os.Build.SUPPORTED_ABIS.toSet()
+    val abiMatch = archive.supportedAbis.isEmpty() || archive.supportedAbis.any { it in deviceAbis }
+    val blocking = mutableListOf<String>()
+    val reasons = mutableListOf<String>()
+    if (cooperative) return RuntimeClassification("COOPERATIVE", "NONE", "COOPERATIVE_SUPPORTED", "READY", listOf("COOPERATIVE_ENTRY_POINT"), emptyList())
+    if (archive.isSplitApk) blocking += "SPLIT_APK_UNSUPPORTED"
+    if (parsed.mainActivity == null) blocking += "NO_MAIN_LAUNCHER_ACTIVITY"
+    if (!abiMatch) blocking += "ABI_UNSUPPORTED"
+    if (parsed.permissions.any { it.name.contains("BIND_ACCESSIBILITY_SERVICE") }) blocking += "ACCESSIBILITY_UNSUPPORTED"
+    if (parsed.permissions.any { it.name.contains("BIND_VPN_SERVICE") }) blocking += "VPN_UNSUPPORTED"
+    if (parsed.components.any { it.processName != null && it.processName != parsed.packageName }) reasons += "MULTIPROCESS_HIGH_RISK"
+    if (parsed.permissions.any { it.name.contains("com.google.android.gms") } || scannerIssueCodes.any { it.contains("GMS") }) reasons += "GMS_UNAVAILABLE"
+    if (parsed.permissions.any { it.name.contains("PLAY_INTEGRITY") }) reasons += "PLAY_INTEGRITY_LIMITATION"
+    if (archive.nativeLibraryCount == 0) reasons += "GENERIC_SIMPLE_NO_NATIVE_CODE" else reasons += if (abiMatch) "GENERIC_NATIVE_COMPATIBLE" else "NATIVE_ABI_MISMATCH"
+    val canAttemptGeneric = blocking.isEmpty() && reasons.none { it == "MULTIPROCESS_HIGH_RISK" || it == "GMS_UNAVAILABLE" }
+    return if (canAttemptGeneric) RuntimeClassification("INSPECTION_ONLY", if (archive.nativeLibraryCount == 0) "GENERIC_SIMPLE_READY_WHEN_HOST_IMPLEMENTED" else "GENERIC_NATIVE_COMPATIBLE_READY_WHEN_HOST_IMPLEMENTED", "GENERIC_EXPERIMENTAL", "INSPECTION_ONLY", reasons + "GENERIC_ACTIVITY_HOST_NOT_IMPLEMENTED", listOf("GENERIC_ACTIVITY_HOST_NOT_IMPLEMENTED"))
+    else RuntimeClassification("INSPECTION_ONLY", "INSPECTION_ONLY", if (blocking.isEmpty()) "HIGH_RISK" else blocking.first(), if (blocking.isEmpty()) "INSPECTION_ONLY" else "BLOCKED", reasons, blocking.ifEmpty { listOf("HIGH_RISK_API_UNSUPPORTED") })
 }
 
 class VirtualPackageStorageV1(private val filesDir: File) {
