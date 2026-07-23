@@ -35,6 +35,14 @@ class GenericRuntimeStaticTest {
         assertTrue(slots.contains("runtimeAdapterFor(pkg)"))
     }
 
+    @Test fun startupReprocessUsesExistingLoggerApi() {
+        val repository = source("app/src/main/java/com/valcrono/virtualspace/VirtualRepository.kt")
+        val core = source("core/src/main/kotlin/com/valcrono/core/Core.kt")
+        assertFalse(repository.contains("VLog.w("))
+        assertTrue(repository.contains("VLog.e("))
+        assertTrue(core.contains("fun e(tag:String,msg:String,t:Throwable?=null)"))
+    }
+
     @Test fun nativeLibrariesAreNotAutomaticallyBlocked() {
         val importer = source("app/src/main/java/com/valcrono/virtualspace/ApkImportV1.kt")
         assertFalse(importer.contains("REQUIRES_NATIVE_SUPPORT"))

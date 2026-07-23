@@ -15,7 +15,7 @@ import java.util.UUID
 object DatabaseProvider {
     @Volatile private var instance: ValcronoDatabase? = null
     fun get(context: Context): ValcronoDatabase = instance ?: synchronized(this) {
-        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15).enableMultiInstanceInvalidation().build().also { instance = it }
+        instance ?: Room.databaseBuilder(context.applicationContext, ValcronoDatabase::class.java, "valcrono-virtualspace.db").addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16).enableMultiInstanceInvalidation().build().also { instance = it }
     }
     fun instanceId(context: Context): String = System.identityHashCode(get(context)).toString(16)
 }
@@ -26,7 +26,25 @@ class VirtualRepository(private val context: Context) {
     fun packages(): Flow<List<VirtualPackageEntity>> = db.packages().observePackages()
     fun sessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
     suspend fun getPackage(packageName: String, userId: Int) = db.packages().getPackage(packageName, userId)
-    suspend fun validateOnStartup() { db.packages().observePackages() /* Flow used by UI; detailed scan happens during import/open */ }
+    suspend fun validateOnStartup() {
+        db.packages().getAll().forEach { pkg -> runCatching { reprocessImportedPackage(pkg) }.onFailure { VLog.e("Repository", "reprocess failed package=${pkg.packageName}: ${it.message}", it) } }
+    }
+    private suspend fun reprocessImportedPackage(pkg: VirtualPackageEntity) {
+        val apk = File(pkg.apkInternalPath).takeIf { it.isFile } ?: return
+        val parsed = AndroidArchivePackageParser(context).parse(apk)
+        val archive = ApkArchiveReaderV1.read(apk)
+        val classification = classifyRuntime(parsed, archive, parsed.entryPointClass != null, emptyList())
+        db.packages().upsertPackage(pkg.copy(
+            label = parsed.label, displayName = parsed.label, versionCode = parsed.versionCode, versionName = parsed.versionName,
+            minSdk = parsed.minSdk, targetSdk = parsed.targetSdk, primaryAbi = parsed.primaryAbi, hasNativeLibraries = parsed.hasNativeLibraries,
+            mainActivity = parsed.mainActivity, launcherActivityName = parsed.mainActivity, launcherAliasName = parsed.launcherAliasName, launcherTargetActivity = parsed.launcherTargetActivity,
+            entryPointClass = parsed.entryPointClass, cooperativeEntryPointClass = parsed.entryPointClass, applicationClassName = parsed.applicationClassName, hasCustomApplication = parsed.applicationClassName != null,
+            compileSdk = parsed.compileSdk, dexCount = archive.dexCount, nativeLibraryCount = archive.nativeLibraryCount, hasNativeCode = archive.nativeLibraryCount > 0,
+            isSplitApk = archive.isSplitApk, splitNamesJson = archive.splitNames.toJsonArray(), supportedAbisJson = archive.supportedAbis.toJsonArray(), nativeLibrariesJson = parsed.nativeLibraries.toJsonArray(),
+            declaredActivitiesJson = parsed.components.filter { it.type == ComponentType.ACTIVITY }.map { it.name }.toJsonArray(), declaredServicesJson = parsed.components.filter { it.type == ComponentType.SERVICE }.map { it.name }.toJsonArray(), declaredReceiversJson = parsed.components.filter { it.type == ComponentType.RECEIVER }.map { it.name }.toJsonArray(), declaredProvidersJson = parsed.components.filter { it.type == ComponentType.PROVIDER }.map { it.name }.toJsonArray(), declaredProcessesJson = parsed.declaredProcesses.toJsonArray(), requestedPermissionsJson = parsed.permissions.map { it.name }.toJsonArray(), importantIntentFiltersJson = parsed.intentFilters.map { "${it.componentName}:${it.actions.joinToString("|")}:${it.categories.joinToString("|")}" }.toJsonArray(),
+            detectedFramework = parsed.framework, highRiskApisJson = parsed.highRiskApis.toJsonArray(), compatibilityLevel = classification.compatibilityLevel, runtimeMode = classification.runtimeMode, genericRuntimeCapability = classification.genericRuntimeCapability, compatibilityReasonsJson = classification.reasons.toJsonArray(), blockingReasonsJson = classification.blockingReasons.toJsonArray(), importState = classification.importState, updatedAt = System.currentTimeMillis(), lastVerifiedAt = System.currentTimeMillis()
+        ))
+    }
     suspend fun importCopiedApk(apk: File, userId: Int, metadata: AndroidArchivePackageParser.AndroidParsedPackage): VirtualPackageEntity {
         val sessionId = UUID.randomUUID().toString(); val now=System.currentTimeMillis()
         db.installSessions().upsert(VirtualInstallSessionEntity(sessionId, metadata.packageName, apk.absolutePath, now, now, "CREATED", null))

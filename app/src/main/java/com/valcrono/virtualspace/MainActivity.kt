@@ -1251,8 +1251,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun launchVirtual(pkg: VirtualPackageEntity) {
-        val activity = when (pkg.runtimeMode) { "COOPERATIVE" -> pkg.cooperativeEntryPointClass ?: pkg.entryPointClass; "GENERIC_EXPERIMENTAL" -> pkg.launcherActivityName; else -> null } ?: run { importStatus = "No ejecutable: runtime ${pkg.runtimeMode}, motivos ${pkg.blockingReasonsJson}"; return }
-        if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
+        val activity = when (pkg.runtimeMode) { "COOPERATIVE" -> pkg.cooperativeEntryPointClass ?: pkg.entryPointClass; "GENERIC_EXPERIMENTAL" -> pkg.launcherTargetActivity ?: pkg.launcherActivityName; else -> null } ?: run { importStatus = "No ejecutable: runtime ${pkg.runtimeMode}, motivos ${pkg.blockingReasonsJson}"; return }
+        if (pkg.runtimeMode == "COOPERATIVE" && pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
             val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity, settingsStore.settings.first().maxActiveApps) }
             HostTaskSupervisorService.ensureRunning(this@MainActivity)
@@ -1539,7 +1539,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     private fun compatLabel(level: String): String = when (level) { "COOPERATIVE_SUPPORTED" -> "Cooperativa compatible"; "HIGH_RISK" -> "Riesgo alto"; "UNSUPPORTED" -> "No ejecutable"; "IMPORTED_NOT_RUNNABLE" -> "Importada · No compatible con runtime cooperativo"; else -> level }
 
-    private fun runtimeModeLabel(pkg: VirtualPackageEntity): String = pkg.runtimeMode
+    private fun runtimeModeLabel(pkg: VirtualPackageEntity): String = when (pkg.runtimeMode) { "COOPERATIVE" -> "Cooperativa compatible"; "GENERIC_EXPERIMENTAL" -> "Experimental ejecutable"; "INSPECTION_ONLY" -> "Solo inspección"; else -> if (pkg.importState == "BLOCKED") "Bloqueada" else pkg.runtimeMode }
 
     private fun trimPolicyLabel(name: String): String = name.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() }
 
