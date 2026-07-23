@@ -753,7 +753,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                 else -> emptyList()
             }
         }
-        val failedTrace = traces.lastOrNull { !it.success } ?: traces.lastOrNull()
+        val failedTrace = traces.lastOrNull { !it.success }
         val terminalState = roomSession?.terminalState ?: roomSession?.state ?: "DETENIDA"
         val terminalCode = roomSession?.terminalErrorCode ?: roomSession?.errorCode
         val terminalMessage = roomSession?.terminalErrorMessage ?: roomSession?.sanitizedError
@@ -764,8 +764,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             "PID" to (roomSession?.hostPid?.toString() ?: failedTrace?.pid?.toString() ?: "PROCESS_NOT_STARTED"),
             "Proceso" to (failedTrace?.processName ?: "No disponible"),
             "Última fase completada" to (traces.lastOrNull { it.success }?.phase ?: roomSession?.launchPhase ?: "No disponible"),
-            "Fase fallida" to (roomSession?.terminalPhase ?: failedTrace?.phase ?: "No disponible"),
-            "Código" to (terminalCode ?: "Sin error terminal"),
+            "Fase actual" to (roomSession?.launchPhase ?: "No disponible"),
+            "Fase fallida" to (roomSession?.terminalPhase ?: failedTrace?.phase ?: "No existe"),
+            "Proceso perdido" to (roomSession?.processExitDetectedBy ?: "No detectado"),
+            "Motivo de reconciliación" to (roomSession?.lastRuntimeExitReason ?: "No disponible"),
+            "Código" to (terminalCode ?: failedTrace?.errorCode ?: "Sin fallo registrado"),
             "Excepción" to (roomSession?.terminalExceptionClass ?: failedTrace?.exceptionClass ?: "No disponible"),
             "Causa raíz" to (roomSession?.terminalRootCauseClass ?: failedTrace?.rootCauseClass ?: "No disponible"),
             "Hora" to (roomSession?.failedAt?.let(::date) ?: failedTrace?.timestampWallClock?.let(::date) ?: "No disponible"),

@@ -51,12 +51,14 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     }
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            binder = service as? RuntimeProcessService.RuntimeBinder
-            runCatching { service?.linkToDeath(deathRecipient, 0) }
-            isBound = true; isBinding = false; boundSessionId = sessionId
-            recordActivityAttached()
-            val content = binder?.attachUi(sessionId, uiCallback)
-            if (content?.result?.success == true) { if (content.content != null) render(content.content) else attachGuestView() } else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
+            runCatching {
+                binder = service as? RuntimeProcessService.RuntimeBinder
+                runCatching { service?.linkToDeath(deathRecipient, 0) }
+                isBound = true; isBinding = false; boundSessionId = sessionId
+                recordActivityAttached()
+                val content = binder?.attachUi(sessionId, uiCallback)
+                if (content?.result?.success == true) { if (content.content != null) render(content.content) else attachGuestView() } else renderError(content?.result?.sanitizedMessage ?: "PROCESS_LOST")
+            }.getOrElse { renderError("PROXY_SERVICE_CONNECTED_FAILED: ${it.message ?: it::class.java.name}") }
         }
         override fun onServiceDisconnected(name: ComponentName?) { val sid = boundSessionId; binder = null; isBound = false; isBinding = false; boundSessionId = null; if (sid != null) CoroutineScope(Dispatchers.IO).launch { DatabaseProvider.get(applicationContext).runtimeSlots().findBySession(sid)?.let { RuntimeSlotReclaimer(DatabaseProvider.get(applicationContext)).reclaimSlot(it.slotId, sid, it.launchAttemptId, it.reservationToken, RuntimeReclaimReason.BINDER_DIED) } }; renderError("PROCESS_LOST: servicio desconectado") }
         override fun onBindingDied(name: ComponentName?) { onServiceDisconnected(name) }
@@ -73,6 +75,10 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); handleIntent(intent) }
 
     private fun handleIntent(intent: Intent) {
+        runCatching { handleIntentGuarded(intent) }.getOrElse { renderError("PROXY_HANDLE_INTENT_FAILED: ${it.message ?: it::class.java.name}") }
+    }
+
+    private fun handleIntentGuarded(intent: Intent) {
         require(intent.getStringExtra("slotId") == slotId.name) { "SLOT_MISMATCH" }
         val nextSessionId = intent.getStringExtra("sessionId").orEmpty()
         if (binder != null && boundSessionId == nextSessionId) {
@@ -106,7 +112,7 @@ abstract class BaseRuntimeProxyActivity : Activity() {
     private fun recordActivityAttached() { if (sessionId.isNotBlank()) CoroutineScope(Dispatchers.IO).launch { runCatching { DatabaseProvider.get(applicationContext).runtimeSlots().markActivityAttached(slotId.name, sessionId, taskId, activityInstanceId, System.currentTimeMillis(), Process.myPid()) } } }
     private fun recordActivityDetached() { if (sessionId.isNotBlank()) CoroutineScope(Dispatchers.IO).launch { runCatching { DatabaseProvider.get(applicationContext).runtimeSlots().markActivityDetached(slotId.name, sessionId, activityInstanceId) } } }
     private fun render(content: VirtualContent) { container.removeAllViews(); addContent(container, content) }
-    private fun attachGuestView() { val view = binder?.attachGuestView(sessionId, this); if (view != null) { container.removeAllViews(); (view.parent as? android.view.ViewGroup)?.removeView(view); setContentView(view) } else renderError("GENERIC_GUEST_VIEW_UNAVAILABLE") }
+    private fun attachGuestView() { when (val result = binder?.attachGuestView(sessionId, this) ?: GuestViewAttachResult.Failure("PROCESS_LOST", "GUEST_VIEW_ATTACHED", "Proceso runtime no disponible.")) { is GuestViewAttachResult.Success -> { val view = result.view; container.removeAllViews(); (view.parent as? android.view.ViewGroup)?.removeView(view); setContentView(view) }; is GuestViewAttachResult.Failure -> renderError("${result.errorCode} @ ${result.phase}: ${result.sanitizedMessage}") } }
     private fun addContent(parent: LinearLayout, content: VirtualContent) { when (content) { is VirtualContent.Text -> parent.addView(TextView(this).apply { text = content.text; textSize = 16f }); is VirtualContent.Button -> parent.addView(Button(this).apply { text = content.text; setOnClickListener { runAction(content.actionId) } }); is VirtualContent.Column -> content.children.forEach { addContent(parent, it) }; is VirtualContent.ListContent -> { parent.addView(TextView(this).apply { text = content.title; textSize = 18f }); content.rows.forEach { parent.addView(TextView(this).apply { text = "• $it" }) } } } }
     private fun runAction(actionId: String) { val result = binder?.dispatchAction(sessionId, actionId); if (result?.result?.success == true && result.content != null) render(result.content) else renderError(result?.result?.sanitizedMessage ?: "RUNTIME_ACTION_FAILED") }
     private fun renderError(message: String) { container.removeAllViews(); container.addView(TextView(this).apply { text = message }) }

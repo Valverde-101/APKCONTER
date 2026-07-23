@@ -39,8 +39,10 @@ class RuntimeSlotReclaimer(private val db: ValcronoDatabase) {
             }
             val session = db.runtime().get(expectedSessionId)
             if (session?.currentLaunchAttemptId == expectedLaunchAttemptId) {
-                val state = if (reason == RuntimeReclaimReason.STOPPED || reason == RuntimeReclaimReason.CANCELLED || session?.hasReachedActiveAck == true) "STOPPED" else "DEAD"
-                db.runtime().compareAndSetState(expectedSessionId, expectedLaunchAttemptId, state, reason.name, now, reason.code, reason.message)
+                val state = when { reason == RuntimeReclaimReason.STOPPED || reason == RuntimeReclaimReason.CANCELLED -> "STOPPED"; session?.state == "STARTING" -> "FAILED"; session?.hasReachedActiveAck == true -> "CRASHED"; else -> "FAILED" }
+                val code = when { state == "FAILED" && reason == RuntimeReclaimReason.PROCESS_LOST -> "PROCESS_DIED_DURING_START"; state == "CRASHED" -> "PROCESS_DIED"; else -> reason.code }
+                val phase = when { state == "FAILED" && reason == RuntimeReclaimReason.PROCESS_LOST -> "PROCESS_DIED_DURING_START"; state == "CRASHED" -> "PROCESS_DIED"; else -> reason.name }
+                db.runtime().compareAndSetState(expectedSessionId, expectedLaunchAttemptId, state, phase, now, code, reason.message)
                 db.launchTokens().revokeAttempt(expectedSessionId, expectedLaunchAttemptId, now)
             }
             if (slot.packageName != null && slot.virtualUserId != null) db.messages().requeueDeliveringFor(slot.packageName, slot.virtualUserId)
