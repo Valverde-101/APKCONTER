@@ -1,10 +1,12 @@
 package com.valcrono.virtualspace
 
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
-@Entity(tableName = "virtual_packages", primaryKeys = ["packageName", "virtualUserId"])
-data class VirtualPackageEntity(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val sha256:String,val apkInternalPath:String,val installTime:Long,val updateTime:Long,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?,val compatibilityLevel:String,val enabled:Boolean,val damaged:Boolean,val virtualUserId:Int,val virtualUid:Int,val runtimeMode:String = "COOPERATIVE")
+@Entity(tableName = "virtual_packages", primaryKeys = ["packageName", "virtualUserId"], indices = [Index(value = ["packageName"]), Index(value = ["sha256"]), Index(value = ["compatibilityLevel"]), Index(value = ["importState"])])
+data class VirtualPackageEntity(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val sha256:String,val apkInternalPath:String,val installTime:Long,val updateTime:Long,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?,val compatibilityLevel:String,val enabled:Boolean,val damaged:Boolean,val virtualUserId:Int,val virtualUid:Int,val runtimeMode:String = "COOPERATIVE", val displayName:String = label, val importedApkPath:String = apkInternalPath, val originalFileName:String = "", val apkSizeBytes:Long = 0, val certificateSha256:String? = null, val compileSdk:Int? = null, val supportedAbisJson:String = "[]", val dexCount:Int = 0, val nativeLibraryCount:Int = 0, val hasNativeCode:Boolean = hasNativeLibraries, val isSplitApk:Boolean = false, val splitNamesJson:String = "[]", val hasCustomApplication:Boolean = false, val applicationClassName:String? = null, val launcherActivityName:String? = mainActivity, val declaredActivitiesJson:String = "[]", val declaredServicesJson:String = "[]", val declaredReceiversJson:String = "[]", val declaredProvidersJson:String = "[]", val declaredPermissionsJson:String = "[]", val requestedPermissionsJson:String = "[]", val compatibilityReasonsJson:String = "[]", val importState:String = "READY", val importErrorCode:String? = null, val importErrorMessage:String? = null, val importedAt:Long = installTime, val updatedAt:Long = updateTime, val lastVerifiedAt:Long? = null)
 @Entity(tableName = "virtual_components", primaryKeys = ["packageName", "virtualUserId", "name", "type"])
 data class VirtualComponentEntity(val packageName:String,val virtualUserId:Int,val name:String,val type:String,val exported:Boolean,val processName:String?)
 @Entity(tableName = "virtual_permissions", primaryKeys = ["packageName", "virtualUserId", "name"])
@@ -181,7 +183,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=13, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=14, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
@@ -195,4 +197,50 @@ abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun fsAccessLog(): VirtualFsAccessLogDao
     abstract fun launchTokens(): VirtualLaunchTokenDao
     abstract fun runtimeSlots(): RuntimeSlotDao
+}
+
+
+val MIGRATION_13_14 = object : Migration(13, 14) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        fun add(sql: String) = runCatching { db.execSQL(sql) }
+        add("ALTER TABLE virtual_packages ADD COLUMN displayName TEXT NOT NULL DEFAULT ''")
+        add("ALTER TABLE virtual_packages ADD COLUMN importedApkPath TEXT NOT NULL DEFAULT ''")
+        add("ALTER TABLE virtual_packages ADD COLUMN originalFileName TEXT NOT NULL DEFAULT ''")
+        add("ALTER TABLE virtual_packages ADD COLUMN apkSizeBytes INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN certificateSha256 TEXT")
+        add("ALTER TABLE virtual_packages ADD COLUMN compileSdk INTEGER")
+        add("ALTER TABLE virtual_packages ADD COLUMN supportedAbisJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN dexCount INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN nativeLibraryCount INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN hasNativeCode INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN isSplitApk INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN splitNamesJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN hasCustomApplication INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN applicationClassName TEXT")
+        add("ALTER TABLE virtual_packages ADD COLUMN launcherActivityName TEXT")
+        add("ALTER TABLE virtual_packages ADD COLUMN declaredActivitiesJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN declaredServicesJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN declaredReceiversJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN declaredProvidersJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN declaredPermissionsJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN requestedPermissionsJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN compatibilityReasonsJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN importState TEXT NOT NULL DEFAULT 'READY'")
+        add("ALTER TABLE virtual_packages ADD COLUMN importErrorCode TEXT")
+        add("ALTER TABLE virtual_packages ADD COLUMN importErrorMessage TEXT")
+        add("ALTER TABLE virtual_packages ADD COLUMN importedAt INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+        add("ALTER TABLE virtual_packages ADD COLUMN lastVerifiedAt INTEGER")
+        db.execSQL("UPDATE virtual_packages SET displayName=label WHERE displayName=''")
+        db.execSQL("UPDATE virtual_packages SET importedApkPath=apkInternalPath WHERE importedApkPath=''")
+        db.execSQL("UPDATE virtual_packages SET apkSizeBytes=CASE WHEN apkInternalPath IS NULL OR apkInternalPath='' THEN 0 ELSE apkSizeBytes END")
+        db.execSQL("UPDATE virtual_packages SET hasNativeCode=CASE WHEN hasNativeLibraries THEN 1 ELSE 0 END")
+        db.execSQL("UPDATE virtual_packages SET launcherActivityName=mainActivity WHERE launcherActivityName IS NULL")
+        db.execSQL("UPDATE virtual_packages SET importedAt=installTime WHERE importedAt=0")
+        db.execSQL("UPDATE virtual_packages SET updatedAt=updateTime WHERE updatedAt=0")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_packageName ON virtual_packages(packageName)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_sha256 ON virtual_packages(sha256)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_compatibilityLevel ON virtual_packages(compatibilityLevel)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_importState ON virtual_packages(importState)")
+    }
 }
