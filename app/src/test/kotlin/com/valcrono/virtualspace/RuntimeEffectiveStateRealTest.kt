@@ -103,3 +103,27 @@ class DisplayedStateRuntimeSnapshotTest {
         assertEquals(DisplayedAppState.ACTIVE_BACKGROUND, productionSafeDisplayedState(deriveDisplayedState(snapshot), snapshot))
     }
 }
+
+class RuntimeActiveInvariantTest {
+    @Test fun sessionAndPidAreRequiredForActiveRuntime() {
+        val base = RuntimeAppSnapshot(
+            packageName = "pkg",
+            sessionId = "s1",
+            slotId = "VAPP0",
+            slotState = RuntimeSlotState.ACTIVE_BACKGROUND,
+            pid = 1234,
+            processAlive = true,
+            serviceConnected = true,
+            binderAlive = false,
+            heartbeatAgeMs = 0,
+            classLoaderLoaded = true,
+            activityAttached = false,
+        )
+        assertEquals(true, isRuntimeActive(base))
+        assertFalse(isRuntimeActive(base.copy(sessionId = null)))
+        assertFalse(isRuntimeActive(base.copy(pid = null)))
+        assertFalse(isRuntimeActive(base.copy(pid = 0)))
+        assertFalse(isRuntimeActive(base.copy(slotState = RuntimeSlotState.FREE)))
+        assertFalse(isRuntimeActive(base.copy(processAlive = false)))
+    }
+}
