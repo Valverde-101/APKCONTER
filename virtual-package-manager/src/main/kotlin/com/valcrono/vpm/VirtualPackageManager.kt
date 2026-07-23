@@ -82,9 +82,13 @@ class ApkValidator(private val limits: ApkLimits = ApkLimits()) {
             ZipFile(apk).use { zip ->
                 var entries = 0
                 var total = 0L
+                var dexCount = 0
+                val seenNames = linkedSetOf<String>()
                 zip.entries().asSequence().forEach { entry ->
                     entries++
                     require(entries <= limits.maxEntries) { "Too many ZIP entries" }
+                    require(seenNames.add(entry.name)) { "Duplicate ZIP entry ${entry.name}" }
+                    if (Regex("^classes(\\d+)?\\.dex$").matches(entry.name)) dexCount++
                     require(!entry.name.startsWith("/") && !entry.name.startsWith("\\")) { "Unsafe absolute ZIP path ${entry.name}" }
                     require(!entry.name.contains("../") && !entry.name.contains("..\\")) { "Unsafe ZIP path ${entry.name}" }
                     require(!entry.name.contains('\u0000')) { "Unsafe NUL ZIP path ${entry.name}" }
@@ -97,6 +101,7 @@ class ApkValidator(private val limits: ApkLimits = ApkLimits()) {
                     }
                 }
                 require(zip.getEntry("AndroidManifest.xml") != null) { "Missing AndroidManifest.xml" }
+                require(dexCount > 0) { "Missing classes.dex" }
             }
         } catch (e: ZipException) {
             throw IllegalArgumentException("Corrupt APK/ZIP", e)

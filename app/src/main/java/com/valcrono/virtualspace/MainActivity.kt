@@ -424,7 +424,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Column(Modifier.weight(1f)) {
                         Text(pkg.label, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(pkg.packageName, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text("v${pkg.versionName} · ${compatLabel(pkg.compatibilityLevel)} · ${runtimeModeLabel(pkg)}")
+                        Text("v${pkg.versionName} · ${compatLabel(pkg.compatibilityLevel)} · ${runtimeModeLabel(pkg)} · ${pkg.importState}")
                     }
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -440,7 +440,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                             modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                         ) { Text(launchButtonLabel(runtimeUiState.primaryAction)) }
                     } else {
-                        Text("APK disponible para inspección; runtime no compatible.")
+                        Text(if (pkg.importState == "BLOCKED") "APK bloqueado: ver incompatibilidad." else "APK importado para análisis; ejecución genérica V1 experimental no activada.")
                         Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
                     }
                     when (effectiveState) {
@@ -1123,7 +1123,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun launchApkPicker() {
-        picker.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "application/zip", "*/*"))
+        picker.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*"))
     }
 
     private fun importUri(uri: Uri) {
@@ -1131,16 +1131,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         isImporting = true
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
             try {
-                val incoming = withContext(Dispatchers.IO) {
-                    val out = File(cacheDir, "incoming-${System.currentTimeMillis()}.apk")
-                    contentResolver.openInputStream(uri)?.use { input -> out.outputStream().use { input.copyTo(it) } }
-                        ?: error("No se pudo abrir el APK")
-                    out
-                }
-                val parsed = AndroidArchivePackageParser(this@MainActivity).parse(incoming)
-                val imported = withContext(Dispatchers.IO) { repository.importCopiedApk(incoming, 0, parsed) }
-                incoming.delete()
-                importStatus = "Importado ${imported.label}: ${imported.compatibilityLevel}"
+                val imported = withContext(Dispatchers.IO) { ApkImportCoordinatorV1(this@MainActivity, repository).importFromSaf(uri, 0) }
+                importStatus = "Analizado ${imported.displayName}: ${imported.compatibilityLevel} · ${imported.importState}"
             } catch (t: Throwable) {
                 importStatus = "No se pudo importar el APK: ${t.message}"
                 VLog.e("UI", importStatus, t)
