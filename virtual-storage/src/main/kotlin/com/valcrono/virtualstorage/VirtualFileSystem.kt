@@ -99,7 +99,9 @@ class VirtualFsResolver(private val namespace: VirtualFsNamespace) {
         Regex("^/data/user/(\\d+)/([^/]+)(/.*)?$").matchEntire(p)?.let { m -> return packageData(p, m.groupValues[1].toInt(), m.groupValues[2], m.groupValues.getOrNull(3).orEmpty()) }
         Regex("^/data/app/([^/]+)(/base\\.apk|/lib.*)?$").matchEntire(p)?.let { m ->
             val pkg=m.groupValues[1]; val tail=m.groupValues.getOrNull(2).orEmpty(); val root=namespace.packageRoot(userId,pkg)
-            val f = if (tail == "/base.apk") root.resolve("apk").listFiles()?.firstOrNull{it.extension=="apk"} ?: root.resolve("apk/base.apk") else root.resolve("lib${tail.removePrefix("/lib")}")
+            val filesRoot = root.parentFile?.parentFile?.parentFile?.parentFile ?: root
+            val canonicalRoot = File(filesRoot, "virtual-packages/users/$userId/$pkg")
+            val f = if (tail == "/base.apk") canonicalRoot.resolve("apk/base.apk").takeIf { it.isFile } ?: root.resolve("apk").listFiles()?.firstOrNull{it.extension=="apk"} ?: root.resolve("apk/base.apk") else root.resolve("lib${tail.removePrefix("/lib")}")
             return VirtualFsResolution(fileNode(p,f,pkg, readOnly = true))
         }
         Regex("^/storage/emulated/(\\d+)/Android/data/([^/]+)/(files|cache)(/.*)?$").matchEntire(p)?.let { m ->

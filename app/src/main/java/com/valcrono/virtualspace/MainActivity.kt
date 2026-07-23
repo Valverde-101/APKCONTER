@@ -442,7 +442,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     } else {
                         Text(when { pkg.importState == "BLOCKED" -> "Bloqueada: ver incompatibilidad."; pkg.runtimeMode == "GENERIC_EXPERIMENTAL" -> "Experimental: ejecución genérica disponible."; else -> "Solo inspección: ${pkg.blockingReasonsJson}" })
                         if (pkg.runtimeMode == "GENERIC_EXPERIMENTAL") Button(onClick = { openVirtual(pkg) }) { Text("Abrir experimental") }
-                        Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer(pkg.apkInternalPath); destination = Destination.FILES }) { Text("Inspeccionar") }
+                        Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer(pkg.apkVirtualPath); destination = Destination.FILES }) { Text("Inspeccionar") }
                     }
                     when (effectiveState) {
                         RuntimeEffectiveState.STARTING -> OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar") }
@@ -1516,8 +1516,13 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
         }
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", File(pkg.apkInternalPath))
-        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            val artifact = runCatching { repository.apkArtifacts.resolveVerified(pkg) }.getOrElse { e -> withContext(Dispatchers.Main) { importStatus = e.message ?: "APK_ARTIFACT_MISSING" }; return@launch }
+            withContext(Dispatchers.Main) {
+                val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", artifact.file)
+                startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            }
+        }
     }
 
     private fun externalInstallStatus(pkg: VirtualPackageEntity): String {
