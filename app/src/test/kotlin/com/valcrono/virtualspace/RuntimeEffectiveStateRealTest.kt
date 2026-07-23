@@ -1,6 +1,7 @@
 package com.valcrono.virtualspace
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 private fun testSession(state: String, now: Long = 10_000L) = VirtualRuntimeSessionEntity(
@@ -42,6 +43,8 @@ private fun testSlot(state: String, now: Long = 10_000L) = RuntimeSlotEntity(
     activityInstanceId = "activity",
     activityLastAttachedAt = now,
     activityAttached = true,
+    binderAlive = true,
+    runtimeGeneration = RuntimeHostRegistry.runtimeGeneration,
 )
 
 class ActiveSlotOverridesStaleStartingUiTest {
@@ -67,5 +70,15 @@ class ActivityAttachedIsClearedOnStopTest {
     @Test fun detachedSlotDoesNotReportCurrentAttachment() {
         val detached = testSlot("ACTIVE_BACKGROUND").copy(activityAttached = false)
         assertEquals(false, detached.activityAttached)
+    }
+}
+
+class DisplayedStateInvariantTest {
+    @Test fun freeSlotCannotDisplayActiveApp() {
+        val app = VirtualPackageEntity("pkg", "TestApp A", 1, "1", 23, 35, "sha", "/tmp/app.apk", 0, 0, null, false, null, "Entry", "COOPERATIVE_SUPPORTED", true, false, 0, 10000)
+        val freeSlot = testSlot("FREE").copy(packageName = null, sessionId = null, hostPid = null, binderAlive = false)
+        val displayed = calculateDisplayedState(app, freeSlot, testSession("ACTIVE"), currentRuntimeGeneration = RuntimeHostRegistry.runtimeGeneration)
+        assertEquals(DisplayedAppState.STOPPED, displayed)
+        assertFalse(freeSlot.state == "FREE" && displayed == DisplayedAppState.ACTIVE)
     }
 }
