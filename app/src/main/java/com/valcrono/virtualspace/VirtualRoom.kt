@@ -6,7 +6,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "virtual_packages", primaryKeys = ["packageName", "virtualUserId"], indices = [Index(value = ["packageName"]), Index(value = ["sha256"]), Index(value = ["compatibilityLevel"]), Index(value = ["importState"])])
-data class VirtualPackageEntity(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val sha256:String,val apkInternalPath:String,val installTime:Long,val updateTime:Long,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?,val compatibilityLevel:String,val enabled:Boolean,val damaged:Boolean,val virtualUserId:Int,val virtualUid:Int,val runtimeMode:String = "COOPERATIVE", val displayName:String = label, val importedApkPath:String = apkInternalPath, val originalFileName:String = "", val apkSizeBytes:Long = 0, val certificateSha256:String? = null, val compileSdk:Int? = null, val supportedAbisJson:String = "[]", val dexCount:Int = 0, val nativeLibraryCount:Int = 0, val hasNativeCode:Boolean = hasNativeLibraries, val isSplitApk:Boolean = false, val splitNamesJson:String = "[]", val hasCustomApplication:Boolean = false, val applicationClassName:String? = null, val launcherActivityName:String? = mainActivity, val declaredActivitiesJson:String = "[]", val declaredServicesJson:String = "[]", val declaredReceiversJson:String = "[]", val declaredProvidersJson:String = "[]", val declaredPermissionsJson:String = "[]", val requestedPermissionsJson:String = "[]", val compatibilityReasonsJson:String = "[]", val importState:String = "READY", val importErrorCode:String? = null, val importErrorMessage:String? = null, val importedAt:Long = installTime, val updatedAt:Long = updateTime, val lastVerifiedAt:Long? = null)
+data class VirtualPackageEntity(val packageName:String,val label:String,val versionCode:Long,val versionName:String,val minSdk:Int,val targetSdk:Int,val sha256:String,val apkInternalPath:String,val installTime:Long,val updateTime:Long,val primaryAbi:String?,val hasNativeLibraries:Boolean,val mainActivity:String?,val entryPointClass:String?,val compatibilityLevel:String,val enabled:Boolean,val damaged:Boolean,val virtualUserId:Int,val virtualUid:Int,val runtimeMode:String = "COOPERATIVE", val displayName:String = label, val importedApkPath:String = apkInternalPath, val originalFileName:String = "", val apkSizeBytes:Long = 0, val certificateSha256:String? = null, val compileSdk:Int? = null, val supportedAbisJson:String = "[]", val dexCount:Int = 0, val nativeLibraryCount:Int = 0, val hasNativeCode:Boolean = hasNativeLibraries, val isSplitApk:Boolean = false, val splitNamesJson:String = "[]", val hasCustomApplication:Boolean = false, val applicationClassName:String? = null, val launcherActivityName:String? = mainActivity, val declaredActivitiesJson:String = "[]", val declaredServicesJson:String = "[]", val declaredReceiversJson:String = "[]", val declaredProvidersJson:String = "[]", val declaredPermissionsJson:String = "[]", val requestedPermissionsJson:String = "[]", val compatibilityReasonsJson:String = "[]", val cooperativeEntryPointClass:String? = entryPointClass, val genericRuntimeCapability:String = "NONE", val blockingReasonsJson:String = "[]", val importantIntentFiltersJson:String = "[]", val importState:String = "READY", val importErrorCode:String? = null, val importErrorMessage:String? = null, val importedAt:Long = installTime, val updatedAt:Long = updateTime, val lastVerifiedAt:Long? = null)
 @Entity(tableName = "virtual_components", primaryKeys = ["packageName", "virtualUserId", "name", "type"])
 data class VirtualComponentEntity(val packageName:String,val virtualUserId:Int,val name:String,val type:String,val exported:Boolean,val processName:String?)
 @Entity(tableName = "virtual_permissions", primaryKeys = ["packageName", "virtualUserId", "name"])
@@ -183,7 +183,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface CompatibilityIssueDao { @Upsert suspend fun upsertAll(issues: List<CompatibilityIssueEntity>); @Query("SELECT * FROM compatibility_issues WHERE packageName=:packageName AND virtualUserId=:userId ORDER BY severity, code") suspend fun forPackage(packageName:String,userId:Int): List<CompatibilityIssueEntity> }
 @Dao interface VirtualStorageRecordDao { @Upsert suspend fun upsert(record: VirtualStorageRecordEntity) }
 
-@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=14, exportSchema=false)
+@Database(entities=[VirtualPackageEntity::class,VirtualComponentEntity::class,VirtualPermissionEntity::class,VirtualInstallSessionEntity::class,VirtualStorageRecordEntity::class,CompatibilityIssueEntity::class,VirtualRuntimeSessionEntity::class,VirtualMessageEntity::class,VirtualSharedPermissionEntity::class,VirtualFsAccessLogEntity::class,VirtualLaunchTokenEntity::class,RuntimeSlotEntity::class], version=15, exportSchema=false)
 abstract class ValcronoDatabase: RoomDatabase() {
     abstract fun packages(): VirtualPackageDao
     abstract fun messages(): VirtualMessageDao
@@ -242,5 +242,19 @@ val MIGRATION_13_14 = object : Migration(13, 14) {
         db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_sha256 ON virtual_packages(sha256)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_compatibilityLevel ON virtual_packages(compatibilityLevel)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_virtual_packages_importState ON virtual_packages(importState)")
+    }
+}
+
+
+val MIGRATION_14_15 = object : Migration(14, 15) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        fun add(sql: String) = runCatching { db.execSQL(sql) }
+        add("ALTER TABLE virtual_packages ADD COLUMN cooperativeEntryPointClass TEXT")
+        add("ALTER TABLE virtual_packages ADD COLUMN genericRuntimeCapability TEXT NOT NULL DEFAULT 'NONE'")
+        add("ALTER TABLE virtual_packages ADD COLUMN blockingReasonsJson TEXT NOT NULL DEFAULT '[]'")
+        add("ALTER TABLE virtual_packages ADD COLUMN importantIntentFiltersJson TEXT NOT NULL DEFAULT '[]'")
+        db.execSQL("UPDATE virtual_packages SET cooperativeEntryPointClass=entryPointClass WHERE cooperativeEntryPointClass IS NULL")
+        db.execSQL("UPDATE virtual_packages SET runtimeMode=CASE WHEN entryPointClass IS NOT NULL THEN 'COOPERATIVE' ELSE 'INSPECTION_ONLY' END")
+        db.execSQL("UPDATE virtual_packages SET genericRuntimeCapability=CASE WHEN entryPointClass IS NULL AND launcherActivityName IS NOT NULL AND isSplitApk=0 THEN 'PARSED_ONLY' ELSE genericRuntimeCapability END")
     }
 }
