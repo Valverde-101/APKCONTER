@@ -64,12 +64,18 @@ class ApkImportCoordinatorV1(private val context: Context, private val repositor
                 supportedAbisJson = archive.supportedAbis.toJsonArray(),
                 dexCount = archive.dexCount,
                 nativeLibraryCount = archive.nativeLibraryCount,
+                nativeLibrariesJson = parsed.nativeLibraries.toJsonArray(),
                 hasNativeCode = archive.nativeLibraryCount > 0,
                 isSplitApk = archive.isSplitApk,
                 splitNamesJson = archive.splitNames.toJsonArray(),
+                detectedFramework = parsed.framework,
+                highRiskApisJson = parsed.highRiskApis.toJsonArray(),
+                declaredProcessesJson = parsed.declaredProcesses.toJsonArray(),
                 hasCustomApplication = parsed.applicationClassName != null,
                 applicationClassName = parsed.applicationClassName,
                 launcherActivityName = parsed.mainActivity,
+                launcherAliasName = parsed.launcherAliasName,
+                launcherTargetActivity = parsed.launcherTargetActivity,
                 cooperativeEntryPointClass = parsed.entryPointClass,
                 declaredActivitiesJson = parsed.components.filter { it.type == ComponentType.ACTIVITY }.map { it.name }.toJsonArray(),
                 declaredServicesJson = parsed.components.filter { it.type == ComponentType.SERVICE }.map { it.name }.toJsonArray(),
@@ -118,7 +124,7 @@ class ApkImportCoordinatorV1(private val context: Context, private val repositor
     private fun hasZipHeader(file: File): Boolean = file.inputStream().use { input -> input.read() == 0x50 && input.read() == 0x4b }
 }
 
-data class ApkArchiveFactsV1(val dexCount: Int, val nativeLibraryCount: Int, val supportedAbis: List<String>, val isSplitApk: Boolean, val splitNames: List<String>)
+data class ApkArchiveFactsV1(val dexCount: Int, val nativeLibraryCount: Int, val supportedAbis: List<String>, val isSplitApk: Boolean, val splitNames: List<String>, val nativeLibraries: List<String> = emptyList(), val hasFlutterAssets: Boolean = false)
 
 object ApkArchiveReaderV1 {
     fun read(apk: File): ApkArchiveFactsV1 {
@@ -138,30 +144,32 @@ object ApkArchiveReaderV1 {
             require(zip.getEntry("AndroidManifest.xml") != null) { "APK_MANIFEST_MISSING" }
             require(dex > 0) { "APK_CLASSES_DEX_MISSING" }
         }
-        return ApkArchiveFactsV1(dex, libs, abis.toList(), splits.isNotEmpty(), splits.toList())
+        return ApkArchiveFactsV1(dex, libs, abis.toList(), splits.isNotEmpty(), splits.toList(), names.filter { it.startsWith("lib/") && it.endsWith(".so") }, names.any { it.startsWith("assets/flutter_assets") })
     }
 }
 
 data class RuntimeClassification(val runtimeMode:String, val genericRuntimeCapability:String, val compatibilityLevel:String, val importState:String, val reasons:List<String>, val blockingReasons:List<String>)
 
-private fun classifyRuntime(parsed: AndroidArchivePackageParser.AndroidParsedPackage, archive: ApkArchiveFactsV1, cooperative: Boolean, scannerIssueCodes: List<String>): RuntimeClassification {
+fun classifyRuntime(parsed: AndroidArchivePackageParser.AndroidParsedPackage, archive: ApkArchiveFactsV1, cooperative: Boolean, scannerIssueCodes: List<String>): RuntimeClassification {
     val deviceAbis = android.os.Build.SUPPORTED_ABIS.toSet()
     val abiMatch = archive.supportedAbis.isEmpty() || archive.supportedAbis.any { it in deviceAbis }
     val blocking = mutableListOf<String>()
     val reasons = mutableListOf<String>()
     if (cooperative) return RuntimeClassification("COOPERATIVE", "NONE", "COOPERATIVE_SUPPORTED", "READY", listOf("COOPERATIVE_ENTRY_POINT"), emptyList())
     if (archive.isSplitApk) blocking += "SPLIT_APK_UNSUPPORTED"
-    if (parsed.mainActivity == null) blocking += "NO_MAIN_LAUNCHER_ACTIVITY"
+    if (parsed.launcherTargetActivity == null && parsed.mainActivity == null) blocking += "NO_MAIN_LAUNCHER_ACTIVITY"
     if (!abiMatch) blocking += "ABI_UNSUPPORTED"
     if (parsed.permissions.any { it.name.contains("BIND_ACCESSIBILITY_SERVICE") }) blocking += "ACCESSIBILITY_UNSUPPORTED"
     if (parsed.permissions.any { it.name.contains("BIND_VPN_SERVICE") }) blocking += "VPN_UNSUPPORTED"
-    if (parsed.components.any { it.processName != null && it.processName != parsed.packageName }) reasons += "MULTIPROCESS_HIGH_RISK"
-    if (parsed.permissions.any { it.name.contains("com.google.android.gms") } || scannerIssueCodes.any { it.contains("GMS") }) reasons += "GMS_UNAVAILABLE"
+    parsed.highRiskApis.forEach { reasons += "HIGH_RISK_API_$it" }
+    if (parsed.permissions.any { it.name.contains("com.google.android.gms") } || scannerIssueCodes.any { it.contains("GMS") }) reasons += "GMS_UNAVAILABLE_WARNING"
+    if (parsed.framework == "FLUTTER") reasons += "FRAMEWORK_FLUTTER_DETECTED"
     if (parsed.permissions.any { it.name.contains("PLAY_INTEGRITY") }) reasons += "PLAY_INTEGRITY_LIMITATION"
     if (archive.nativeLibraryCount == 0) reasons += "GENERIC_SIMPLE_NO_NATIVE_CODE" else reasons += if (abiMatch) "GENERIC_NATIVE_COMPATIBLE" else "NATIVE_ABI_MISMATCH"
-    val canAttemptGeneric = blocking.isEmpty() && reasons.none { it == "MULTIPROCESS_HIGH_RISK" || it == "GMS_UNAVAILABLE" }
-    return if (canAttemptGeneric) RuntimeClassification("INSPECTION_ONLY", if (archive.nativeLibraryCount == 0) "GENERIC_SIMPLE_READY_WHEN_HOST_IMPLEMENTED" else "GENERIC_NATIVE_COMPATIBLE_READY_WHEN_HOST_IMPLEMENTED", "GENERIC_EXPERIMENTAL", "INSPECTION_ONLY", reasons + "GENERIC_ACTIVITY_HOST_NOT_IMPLEMENTED", listOf("GENERIC_ACTIVITY_HOST_NOT_IMPLEMENTED"))
-    else RuntimeClassification("INSPECTION_ONLY", "INSPECTION_ONLY", if (blocking.isEmpty()) "HIGH_RISK" else blocking.first(), if (blocking.isEmpty()) "INSPECTION_ONLY" else "BLOCKED", reasons, blocking.ifEmpty { listOf("HIGH_RISK_API_UNSUPPORTED") })
+    val hardRuntimeRisks = setOf("HIGH_RISK_API_ACCESSIBILITY", "HIGH_RISK_API_VPN", "HIGH_RISK_API_DEVICE_ADMIN", "HIGH_RISK_API_MULTIPROCESS", "HIGH_RISK_API_SHIZUKU", "HIGH_RISK_API_PRIVILEGED_SERVICE")
+    val canAttemptGeneric = blocking.isEmpty() && reasons.none { it in hardRuntimeRisks }
+    return if (canAttemptGeneric) RuntimeClassification("GENERIC_EXPERIMENTAL", if (archive.nativeLibraryCount == 0) "GENERIC_SIMPLE_EXECUTABLE" else if (parsed.framework == "FLUTTER") "GENERIC_FLUTTER_EXECUTABLE_ARM64" else "GENERIC_NATIVE_COMPATIBLE_EXECUTABLE", "GENERIC_EXPERIMENTAL", "READY", reasons + "GENERIC_ACTIVITY_HOST_AVAILABLE", emptyList())
+    else RuntimeClassification("INSPECTION_ONLY", "INSPECTION_ONLY", if (blocking.isEmpty()) "HIGH_RISK" else blocking.first(), if (blocking.isEmpty()) "INSPECTION_ONLY" else "BLOCKED", reasons, blocking.ifEmpty { reasons.filter { it.startsWith("HIGH_RISK_API_") }.ifEmpty { listOf("RUNTIME_INCOMPATIBILITY_UNSPECIFIED") } })
 }
 
 class VirtualPackageStorageV1(private val filesDir: File) {
@@ -185,7 +193,7 @@ class VirtualPackageStorageV1(private val filesDir: File) {
     }
 }
 
-private fun List<String>.toJsonArray(): String = joinToString(prefix = "[", postfix = "]") { "\"" + it.escapeJson() + "\"" }
+fun List<String>.toJsonArray(): String = joinToString(prefix = "[", postfix = "]") { "\"" + it.escapeJson() + "\"" }
 private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 private fun com.valcrono.vpm.CompatibilityLevel.toV1Level(cooperative: Boolean): String = when {
     cooperative && this == com.valcrono.vpm.CompatibilityLevel.COOPERATIVE_SUPPORTED -> "COOPERATIVE_SUPPORTED"
