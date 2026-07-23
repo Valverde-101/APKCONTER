@@ -77,7 +77,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -744,10 +743,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val root = repository.storage().resolver().packageRoot(pkg.virtualUserId, pkg.packageName)
         val session by repository.db.runtime().observeSessions().collectAsState(initial = emptyList())
         val roomSession = session.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }
-        val traces by produceState(initialValue = emptyList<RuntimeLaunchTraceEntity>(), roomSession?.currentLaunchAttemptId, roomSession?.sessionId) {
+        var traces by remember(roomSession?.currentLaunchAttemptId, roomSession?.sessionId) { mutableStateOf(emptyList<RuntimeLaunchTraceEntity>()) }
+        LaunchedEffect(roomSession?.currentLaunchAttemptId, roomSession?.sessionId) {
             val attemptId = roomSession?.currentLaunchAttemptId
             val sessionId = roomSession?.sessionId
-            value = when {
+            traces = when {
                 attemptId != null -> repository.db.runtimeLaunchTraces().getForAttempt(attemptId)
                 sessionId != null -> repository.db.runtimeLaunchTraces().getForSession(sessionId)
                 else -> emptyList()
