@@ -188,7 +188,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         pendingLaunchPackage = null
     }
 
-    override fun onResume() { super.onResume(); registerHostTaskWithSupervisor(); if (::runtimeSessions.isInitialized) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileActiveSlots() } }
+    override fun onResume() { super.onResume(); registerHostTaskWithSupervisor(); if (::runtimeSessions.isInitialized) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { runtimeSessions.reconcileApplicationsWithRuntime() } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -202,7 +202,10 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         runtimeMetrics = RuntimeMetricsRepository(resourceTracker)
         runtimeSessions = RuntimeSessionRepository(repository.db)
         runtimeController = RuntimeSessionController(runtimeSessions, repository.db, runtimeMetrics)
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { RuntimeRecoveryManager(repository.db).recoverRuntimeAfterHostRestart() }
+        runBlocking(Dispatchers.IO) {
+            RuntimeRecoveryManager(repository.db).recoverRuntimeAfterHostRestart()
+            runtimeSessions.reconcileApplicationsWithRuntime()
+        }
         setContent { AppUi() }
     }
 
@@ -405,8 +408,8 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
 
     @Composable
     private fun AppCard(pkg: VirtualPackageEntity) {
-        val runtimeStateFlow = remember(pkg.packageName, pkg.virtualUserId) { runtimeSessions.observeRuntimeAppState(pkg.packageName, pkg.virtualUserId) }
-        val runtimeUiState by runtimeStateFlow.collectAsState(initial = RuntimeAppUiState(null, null, null, DisplayedAppState.CHECKING_RUNTIME, runtimeActive = false, activityVisible = false, isRefreshing = true))
+        val runtimeStateFlow = remember(pkg.packageName, pkg.virtualUserId) { runtimeSessions.observeApplicationRuntimeState(pkg.packageName, pkg.virtualUserId) }
+        val runtimeUiState by runtimeStateFlow.collectAsState(initial = RuntimeAppUiState(null, null, null, DisplayedAppState.CHECKING_RUNTIME, runtimeActive = false, activityVisible = false, isRefreshing = true, primaryAction = PrimaryAction.OPENING))
         val session = runtimeUiState.session
         val slot = runtimeUiState.slot
         var menuExpanded by remember { mutableStateOf(false) }
@@ -435,7 +438,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                             onClick = { openVirtual(pkg) },
                             enabled = runtimeUiState.displayedState !in setOf(DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME, DisplayedAppState.STOPPING) && pkg.enabled && !pkg.damaged,
                             modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                        ) { Text(launchButtonLabel(runtimeUiState.displayedState)) }
+                        ) { Text(launchButtonLabel(runtimeUiState.primaryAction)) }
                     } else {
                         Text("APK disponible para inspección; runtime no compatible.")
                         Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
@@ -1195,10 +1198,10 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         DisplayedAppState.STOPPED -> "Detenida"
     }
 
-    private fun launchButtonLabel(state: DisplayedAppState): String = when (state) {
-        DisplayedAppState.ACTIVE_FOREGROUND, DisplayedAppState.ACTIVE_BACKGROUND -> "Volver a la app"
-        DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME, DisplayedAppState.STOPPING -> "Abriendo…"
-        DisplayedAppState.ERROR, DisplayedAppState.STOPPED -> "Abrir"
+    private fun launchButtonLabel(action: PrimaryAction): String = when (action) {
+        PrimaryAction.RETURN_TO_APP -> "Volver a la app"
+        PrimaryAction.OPENING -> "Abriendo…"
+        PrimaryAction.OPEN -> "Abrir"
     }
 
     private fun runtimeSlotLabel(slot: RuntimeSlotEntity?): String = if (slot != null) "Slot: ${slot.slotId} · PID: ${slot.hostPid ?: "—"} · PSS: ${formatBytes(slot.pssBytes ?: 0)}" else "RAM actual: 0 MB · Sin proceso activo"
@@ -1283,7 +1286,11 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun closeAllSessions() {
-        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { repository.db.runtime().stopAll(System.currentTimeMillis()) }
+        pendingLaunchPackage = null
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            repository.db.runtime().stopAll(System.currentTimeMillis())
+            runtimeSessions.reconcileApplicationsWithRuntime()
+        }
         resourceTracker.allSessions().forEach { resourceTracker.stop(it.sessionId) }
         importStatus = "Todas las sesiones se marcaron como detenidas"
     }

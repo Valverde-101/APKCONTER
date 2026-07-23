@@ -8,6 +8,7 @@ import com.valcrono.core.VLog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import java.util.UUID
 
 private const val TOKEN_TTL_MS = 5 * 60 * 1000L
@@ -17,6 +18,7 @@ data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, va
 
 enum class RuntimeOpenMode { COLD_START, WARM_RESUME, RECOVER_SERVICE }
 enum class RuntimeEffectiveState { STOPPED, STARTING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, PAUSED, ERROR }
+enum class PrimaryAction { OPEN, RETURN_TO_APP, OPENING }
 data class RuntimeAppUiState(
     val session: VirtualRuntimeSessionEntity?,
     val slot: RuntimeSlotEntity?,
@@ -25,6 +27,7 @@ data class RuntimeAppUiState(
     val runtimeActive: Boolean,
     val activityVisible: Boolean,
     val isRefreshing: Boolean = false,
+    val primaryAction: PrimaryAction = PrimaryAction.OPEN,
 ) {
     val effectiveState: RuntimeEffectiveState = when (displayedState) {
         DisplayedAppState.ACTIVE_FOREGROUND -> RuntimeEffectiveState.ACTIVE_FOREGROUND
@@ -48,6 +51,8 @@ data class RuntimeOpenDecision(
 class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
 
+    fun observeApplicationRuntimeState(packageName: String, virtualUserId: Int): Flow<RuntimeAppUiState> = observeRuntimeAppState(packageName, virtualUserId)
+
     fun observeRuntimeAppState(packageName: String, virtualUserId: Int): Flow<RuntimeAppUiState> = combine(
         db.packages().observePackage(packageName, virtualUserId),
         db.runtime().observeByPackage(packageName, virtualUserId),
@@ -59,15 +64,47 @@ class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     private fun buildConsistentUiState(app: VirtualPackageEntity?, session: VirtualRuntimeSessionEntity?, slot: RuntimeSlotEntity?): RuntimeAppUiState {
         val snapshot = buildRuntimeAppSnapshot(app, session, slot)
         val displayed = productionSafeDisplayedState(deriveDisplayedState(snapshot), snapshot)
-        val active = displayed == DisplayedAppState.ACTIVE_FOREGROUND || displayed == DisplayedAppState.ACTIVE_BACKGROUND
-        return RuntimeAppUiState(
+        val runtimeLive = isRuntimeActive(snapshot)
+        val active = runtimeLive && displayed in setOf(DisplayedAppState.ACTIVE_FOREGROUND, DisplayedAppState.ACTIVE_BACKGROUND)
+        val launchInProgress = runtimeLive && displayed in setOf(DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME, DisplayedAppState.STOPPING)
+        val primary = when {
+            active -> PrimaryAction.RETURN_TO_APP
+            launchInProgress -> PrimaryAction.OPENING
+            else -> PrimaryAction.OPEN
+        }
+        return normalizeUiState(RuntimeAppUiState(
             session = session,
             slot = if (displayed == DisplayedAppState.STOPPED) null else slot,
             snapshot = snapshot,
-            displayedState = displayed,
-            runtimeActive = active,
-            activityVisible = snapshot?.activityAttached == true,
-        )
+            displayedState = if (runtimeLive) displayed else DisplayedAppState.STOPPED,
+            runtimeActive = runtimeLive,
+            activityVisible = active && snapshot?.activityAttached == true,
+            primaryAction = primary,
+        ))
+    }
+
+    fun normalizeUiState(state: RuntimeAppUiState): RuntimeAppUiState {
+        val impossibleActiveState = state.displayedState in setOf(DisplayedAppState.ACTIVE_FOREGROUND, DisplayedAppState.ACTIVE_BACKGROUND) &&
+            (state.snapshot?.pid == null || state.snapshot.pid <= 0 || state.snapshot.sessionId == null || state.snapshot.slotId == null || state.snapshot.slotState == RuntimeSlotState.FREE || !state.snapshot.processAlive)
+        return if (impossibleActiveState) {
+            state.copy(slot = null, snapshot = state.snapshot?.copy(sessionId = null, slotId = null, pid = null), displayedState = DisplayedAppState.STOPPED, runtimeActive = false, activityVisible = false, primaryAction = PrimaryAction.OPEN)
+        } else state
+    }
+
+    suspend fun reconcileApplicationsWithRuntime() {
+        RuntimeHostRegistry.awaitReady()
+        RuntimeSlotReclaimer(db).reconcileRuntimeState()
+        val now = System.currentTimeMillis()
+        val sessions = db.runtime().observeSessions().first()
+        val slots = db.runtimeSlots().getAll()
+        val activePackages = slots.mapNotNull { slot ->
+            val session = slot.sessionId?.let { sid -> sessions.firstOrNull { it.sessionId == sid } }
+            val snapshot = buildRuntimeAppSnapshot(null, session, slot, now)
+            snapshot?.packageName?.takeIf { isRuntimeActive(snapshot) }
+        }.toSet()
+        db.packages().getAll().forEach { app ->
+            if (app.packageName !in activePackages) db.runtime().markPackageStopped(app.packageName, now, "RUNTIME_RECONCILED_STOPPED")
+        }
     }
 
     suspend fun resolveOpenDecision(packageName: String, virtualUserId: Int): RuntimeOpenDecision? {
