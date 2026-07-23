@@ -39,9 +39,4 @@ class CooperativeRunningVirtualApplication(private val app: RunningVirtualApp) :
     override fun destroy() { app.entry.onDestroy() }
 }
 
-class GenericApkRuntimeAdapter(private val context: Context) : VirtualRuntimeAdapter {
-    override fun start(pkg: VirtualPackageEntity): RunningVirtualApplication {
-        require(pkg.runtimeMode == "GENERIC_EXPERIMENTAL") { "GENERIC_RUNTIME_MODE_REQUIRED" }
-        error("GENERIC_ACTIVITY_HOST_NOT_IMPLEMENTED_ANDROID_${android.os.Build.VERSION.SDK_INT}: conventional Activity launch requires Instrumentation/Window lifecycle host; app remains INSPECTION_ONLY until implemented")
-    }
-}
+class GenericApkRuntimeAdapter(private val context: Context) : VirtualRuntimeAdapter by GenericRuntimeAdapter(context)
