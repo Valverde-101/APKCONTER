@@ -243,6 +243,7 @@ open class RuntimeProcessService : Service() {
         fun pauseSession(sessionId: String): RuntimeIpcResult = pause(sessionId)
         fun resumeSession(sessionId: String): RuntimeIpcResult = resume(sessionId)
         fun stopSession(sessionId: String): RuntimeIpcResult = stop(sessionId)
+        fun shutdownFromHostRemoval(sessionId: String, shutdownGeneration: Long): RuntimeIpcResult = this@RuntimeProcessService.shutdownFromHostRemoval(sessionId, shutdownGeneration)
         fun getStatus(): RuntimeServiceStatus = status()
         fun getMemoryInfo(): SlotMemorySnapshot = currentSlotMemorySnapshot()
         fun requestHeartbeat(): RuntimeIpcResult = heartbeat()
@@ -254,7 +255,7 @@ open class RuntimeProcessService : Service() {
 
     override fun onCreate() { super.onCreate(); repository = VirtualRepository(applicationContext); state = RuntimeSlotState.FREE }
     override fun onBind(intent: Intent?): IBinder { intent?.getParcelableExtra<RuntimeLaunchRequest>("runtimeLaunchRequest")?.let { startSession(it) }; return binder }
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int { intent?.getParcelableExtra<RuntimeLaunchRequest>("runtimeLaunchRequest")?.let { startSession(it) }; return START_STICKY }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int { intent?.getStringExtra("shutdownSessionId")?.let { shutdownFromHostRemoval(it, System.currentTimeMillis()) }; intent?.getParcelableExtra<RuntimeLaunchRequest>("runtimeLaunchRequest")?.let { startSession(it) }; return START_STICKY }
 
     private fun startSession(req: RuntimeLaunchRequest): RuntimeIpcResult = guarded("START_FAILED") {
         if (req.slotId != slotId.name) error("SLOT_MISMATCH")
@@ -288,6 +289,7 @@ open class RuntimeProcessService : Service() {
     private fun pause(sessionId: String): RuntimeIpcResult = guarded("PAUSE_FAILED") { checkSession(sessionId).takeUnless { it.success }?.let { return@guarded it }; transitionUi(RuntimeUiLifecycleState.ATTACHED_BACKGROUND); state = RuntimeSlotState.PAUSED_BY_USER; heartbeat(); RuntimeIpcResult(true) }
     private fun resume(sessionId: String): RuntimeIpcResult = guarded("RESUME_FAILED") { checkSession(sessionId).takeUnless { it.success }?.let { return@guarded it }; setForegroundState(); RuntimeIpcResult(true) }
     // Reclaim replaces direct runtimeSlots().release so stale owners cannot free newer reservations.
+    private fun shutdownFromHostRemoval(sessionId: String, shutdownGeneration: Long): RuntimeIpcResult = guarded("HOST_REMOVAL_SHUTDOWN_FAILED") { checkSession(sessionId).takeUnless { it.success }?.let { return@guarded it }; stopMessageDispatcher("HOST_REMOVED_FROM_RECENTS"); state = RuntimeSlotState.STOPPING; running?.entry?.onPause(); running?.entry?.onStop(); running?.entry?.onDestroy(); running = null; stopHeartbeatLoop(); cachedContent = null; uiCallback = null; uiAttached = false; state = RuntimeSlotState.STOPPED; request?.let { r -> runBlocking { val now=System.currentTimeMillis(); repository.db.runtime().compareAndSetState(r.sessionId, r.launchAttemptId, "STOPPED", "HOST_REMOVED_FROM_RECENTS", now, null, null); repository.db.launchTokens().revokeAttempt(r.sessionId, r.launchAttemptId, now) } }; stopSelf(); RuntimeIpcResult(true) }
     private fun stop(sessionId: String): RuntimeIpcResult = guarded("STOP_FAILED") { checkSession(sessionId).takeUnless { it.success }?.let { return@guarded it }; stopMessageDispatcher("STOP_SESSION"); state = RuntimeSlotState.STOPPING; running?.entry?.onPause(); running?.entry?.onStop(); running?.entry?.onDestroy(); running = null; stopHeartbeatLoop(); state = RuntimeSlotState.STOPPED; request?.let { r -> runBlocking { val now=System.currentTimeMillis(); repository.db.runtime().compareAndSetState(r.sessionId, r.launchAttemptId, "STOPPED", "STOPPED", now, null, null); RuntimeSlotReclaimer(repository.db).reclaimSlot(slotId.name, r.sessionId, r.launchAttemptId, r.reservationToken, RuntimeReclaimReason.STOPPED, now); repository.db.launchTokens().revokeAttempt(r.sessionId, r.launchAttemptId, now) } }; stopSelf(); RuntimeIpcResult(true) }
     private fun setForegroundState() { state = RuntimeSlotState.ACTIVE_FOREGROUND; heartbeatController.updateForegroundState(true); transitionUi(RuntimeUiLifecycleState.ATTACHED_FOREGROUND); heartbeat() }
     private fun heartbeat(): RuntimeIpcResult = guarded("HEARTBEAT_FAILED") {
