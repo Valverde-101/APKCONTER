@@ -745,7 +745,13 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
         val session by repository.db.runtime().observeSessions().collectAsState(initial = emptyList())
         val roomSession = session.firstOrNull { it.packageName == pkg.packageName && it.virtualUserId == pkg.virtualUserId }
         val traces by produceState(initialValue = emptyList<RuntimeLaunchTraceEntity>(), roomSession?.currentLaunchAttemptId, roomSession?.sessionId) {
-            value = roomSession?.currentLaunchAttemptId?.let { repository.db.runtimeLaunchTraces().getForAttempt(it) } ?: roomSession?.sessionId?.let { repository.db.runtimeLaunchTraces().getForSession(it) } ?: emptyList()
+            val attemptId = roomSession?.currentLaunchAttemptId
+            val sessionId = roomSession?.sessionId
+            value = when {
+                attemptId != null -> repository.db.runtimeLaunchTraces().getForAttempt(attemptId)
+                sessionId != null -> repository.db.runtimeLaunchTraces().getForSession(sessionId)
+                else -> emptyList()
+            }
         }
         val failedTrace = traces.lastOrNull { !it.success } ?: traces.lastOrNull()
         val terminalState = roomSession?.terminalState ?: roomSession?.state ?: "DETENIDA"
