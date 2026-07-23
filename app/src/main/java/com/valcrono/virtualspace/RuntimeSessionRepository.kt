@@ -6,6 +6,8 @@ import android.system.Os
 import androidx.room.withTransaction
 import com.valcrono.core.VLog
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import java.util.UUID
 
 private const val TOKEN_TTL_MS = 5 * 60 * 1000L
@@ -15,7 +17,23 @@ data class PreparedLaunch(val sessionId: String, val launchAttemptId: String, va
 
 enum class RuntimeOpenMode { COLD_START, WARM_RESUME, RECOVER_SERVICE }
 enum class RuntimeEffectiveState { STOPPED, STARTING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, PAUSED, ERROR }
-data class RuntimeAppUiState(val session: VirtualRuntimeSessionEntity?, val slot: RuntimeSlotEntity?, val effectiveState: RuntimeEffectiveState)
+data class RuntimeAppUiState(
+    val session: VirtualRuntimeSessionEntity?,
+    val slot: RuntimeSlotEntity?,
+    val snapshot: RuntimeAppSnapshot?,
+    val displayedState: DisplayedAppState,
+    val runtimeActive: Boolean,
+    val activityVisible: Boolean,
+    val isRefreshing: Boolean = false,
+) {
+    val effectiveState: RuntimeEffectiveState = when (displayedState) {
+        DisplayedAppState.ACTIVE_FOREGROUND -> RuntimeEffectiveState.ACTIVE_FOREGROUND
+        DisplayedAppState.ACTIVE_BACKGROUND -> RuntimeEffectiveState.ACTIVE_BACKGROUND
+        DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME -> RuntimeEffectiveState.STARTING
+        DisplayedAppState.ERROR -> RuntimeEffectiveState.ERROR
+        DisplayedAppState.STOPPING, DisplayedAppState.STOPPED -> RuntimeEffectiveState.STOPPED
+    }
+}
 
 data class RuntimeOpenDecision(
     val mode: RuntimeOpenMode,
@@ -29,6 +47,28 @@ data class RuntimeOpenDecision(
 
 class RuntimeSessionRepository(private val db: ValcronoDatabase) {
     fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>> = db.runtime().observeSessions()
+
+    fun observeRuntimeAppState(packageName: String, virtualUserId: Int): Flow<RuntimeAppUiState> = combine(
+        db.packages().observePackage(packageName, virtualUserId),
+        db.runtime().observeByPackage(packageName, virtualUserId),
+        db.runtimeSlots().observeByPackage(packageName, virtualUserId),
+    ) { app, session, slot ->
+        buildConsistentUiState(app = app, session = session, slot = slot)
+    }.distinctUntilChanged()
+
+    private fun buildConsistentUiState(app: VirtualPackageEntity?, session: VirtualRuntimeSessionEntity?, slot: RuntimeSlotEntity?): RuntimeAppUiState {
+        val snapshot = buildRuntimeAppSnapshot(app, session, slot)
+        val displayed = productionSafeDisplayedState(deriveDisplayedState(snapshot), snapshot)
+        val active = displayed == DisplayedAppState.ACTIVE_FOREGROUND || displayed == DisplayedAppState.ACTIVE_BACKGROUND
+        return RuntimeAppUiState(
+            session = session,
+            slot = if (displayed == DisplayedAppState.STOPPED) null else slot,
+            snapshot = snapshot,
+            displayedState = displayed,
+            runtimeActive = active,
+            activityVisible = snapshot?.activityAttached == true,
+        )
+    }
 
     suspend fun resolveOpenDecision(packageName: String, virtualUserId: Int): RuntimeOpenDecision? {
         RuntimeHostRegistry.awaitReady()

@@ -99,6 +99,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("SELECT * FROM runtime_slots WHERE slotId=:slotId LIMIT 1") suspend fun get(slotId:String): RuntimeSlotEntity?
     @Query("SELECT * FROM runtime_slots WHERE sessionId=:sessionId LIMIT 1") suspend fun findBySession(sessionId:String): RuntimeSlotEntity?
     @Query("SELECT * FROM runtime_slots WHERE packageName=:packageName AND virtualUserId=:virtualUserId LIMIT 1") suspend fun findByPackage(packageName:String, virtualUserId:Int): RuntimeSlotEntity?
+    @Query("SELECT * FROM runtime_slots WHERE packageName=:packageName AND virtualUserId=:virtualUserId LIMIT 1") fun observeByPackage(packageName:String, virtualUserId:Int): Flow<RuntimeSlotEntity?>
     @Query("SELECT * FROM runtime_slots WHERE state='FREE' AND sessionId IS NULL AND packageName IS NULL AND launchAttemptId IS NULL AND reservationToken IS NULL AND hostPid IS NULL AND reclaimInProgress=0 AND slotId IN (:enabledSlotIds) ORDER BY slotId LIMIT 1") suspend fun firstFree(enabledSlotIds: List<String>): RuntimeSlotEntity?
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertDefaults(slots: List<RuntimeSlotEntity>)
     @Query("UPDATE runtime_slots SET state='PROCESS_STARTING', packageName=:packageName, virtualUserId=:virtualUserId, sessionId=:sessionId, launchAttemptId=:attemptId, reservationToken=:reservationToken, runtimeGeneration=:runtimeGeneration, reservedAtElapsed=:elapsed, startupDeadlineElapsed=:startupDeadlineElapsed, slotEpoch=slotEpoch+1, hostPid=NULL, assignedAt=:now, startedAt=NULL, lastHeartbeatAt=NULL, lastHeartbeatElapsedRealtime=NULL, lastHeartbeatWallClock=NULL, stoppedAt=NULL, pssBytes=NULL, errorCode=NULL, errorMessage=NULL, lastMutationReason='SLOT_RESERVED', lastMutationCaller=:caller, lastMutationElapsed=:elapsed WHERE slotId=:slotId AND state='FREE' AND sessionId IS NULL AND packageName IS NULL AND launchAttemptId IS NULL AND reservationToken IS NULL") suspend fun reserveSlot(slotId:String, packageName:String, virtualUserId:Int, sessionId:String, attemptId:String, reservationToken:String, runtimeGeneration:Long, now:Long, elapsed:Long, startupDeadlineElapsed:Long, caller:String): Int
@@ -122,6 +123,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Upsert suspend fun upsertPackage(pkg: VirtualPackageEntity)
     @Query("SELECT * FROM virtual_packages ORDER BY label") fun observePackages(): Flow<List<VirtualPackageEntity>>
     @Query("SELECT * FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun getPackage(packageName:String,userId:Int): VirtualPackageEntity?
+    @Query("SELECT * FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId LIMIT 1") fun observePackage(packageName:String,userId:Int): Flow<VirtualPackageEntity?>
     @Query("SELECT COUNT(*) FROM virtual_packages") suspend fun count(): Int
     @Query("UPDATE virtual_packages SET damaged=1 WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun markDamaged(packageName:String,userId:Int)
     @Query("DELETE FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun deletePackage(packageName:String,userId:Int)
@@ -147,6 +149,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Upsert suspend fun upsert(session: VirtualRuntimeSessionEntity)
     @Query("SELECT * FROM virtual_runtime_sessions ORDER BY lastActivityAt DESC") fun observeSessions(): Flow<List<VirtualRuntimeSessionEntity>>
     @Query("SELECT * FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId LIMIT 1") suspend fun forPackage(packageName:String,userId:Int): VirtualRuntimeSessionEntity?
+    @Query("SELECT * FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId LIMIT 1") fun observeByPackage(packageName:String,userId:Int): Flow<VirtualRuntimeSessionEntity?>
     @Query("SELECT * FROM virtual_runtime_sessions WHERE sessionId=:sessionId LIMIT 1") suspend fun get(sessionId:String): VirtualRuntimeSessionEntity?
     @Query("SELECT * FROM virtual_runtime_sessions WHERE state='STARTING' AND lastHeartbeatAt < :deadline") suspend fun staleStarting(deadline:Long): List<VirtualRuntimeSessionEntity>
     @Query("SELECT * FROM virtual_runtime_sessions WHERE state IN ('ACTIVE','PAUSED')") suspend fun resumableSessions(): List<VirtualRuntimeSessionEntity>

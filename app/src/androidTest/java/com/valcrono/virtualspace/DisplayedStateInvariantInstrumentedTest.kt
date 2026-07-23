@@ -15,6 +15,6 @@ class DisplayedStateInvariantInstrumentedTest {
         val freeSlot = RuntimeSlotEntity("VAPP0", "com.valcrono.virtualspace:vapp0", "FREE", null, null, null, null, null, null, null, null, null, null, null, null, null, null)
         val displayed = calculateDisplayedState(app, freeSlot, session, currentRuntimeGeneration = 42L)
         assertEquals(DisplayedAppState.STOPPED, displayed)
-        assertFalse(freeSlot.state == "FREE" && displayed == DisplayedAppState.ACTIVE)
+        assertFalse(freeSlot.state == "FREE" && displayed in setOf(DisplayedAppState.ACTIVE_FOREGROUND, DisplayedAppState.ACTIVE_BACKGROUND))
     }
 }
