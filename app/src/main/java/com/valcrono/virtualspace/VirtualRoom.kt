@@ -122,6 +122,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
 @Dao interface VirtualPackageDao {
     @Upsert suspend fun upsertPackage(pkg: VirtualPackageEntity)
     @Query("SELECT * FROM virtual_packages ORDER BY label") fun observePackages(): Flow<List<VirtualPackageEntity>>
+    @Query("SELECT * FROM virtual_packages ORDER BY label") suspend fun getAll(): List<VirtualPackageEntity>
     @Query("SELECT * FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId") suspend fun getPackage(packageName:String,userId:Int): VirtualPackageEntity?
     @Query("SELECT * FROM virtual_packages WHERE packageName=:packageName AND virtualUserId=:userId LIMIT 1") fun observePackage(packageName:String,userId:Int): Flow<VirtualPackageEntity?>
     @Query("SELECT COUNT(*) FROM virtual_packages") suspend fun count(): Int
@@ -164,6 +165,7 @@ data class VirtualMessageEntity(@PrimaryKey val messageId:String,val virtualUser
     @Query("DELETE FROM virtual_runtime_sessions WHERE packageName=:packageName AND virtualUserId=:userId AND sessionId != :keepSessionId") suspend fun deleteDuplicatesFor(packageName:String,userId:Int,keepSessionId:String)
     @Query("DELETE FROM virtual_runtime_sessions WHERE sessionId=:sessionId") suspend fun deleteSession(sessionId:String)
     @Query("SELECT COUNT(*) FROM virtual_runtime_sessions WHERE state='ACTIVE'") suspend fun activeCount(): Int
+    @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase=:phase,stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,hostPid=NULL,classLoaderState='UNKNOWN',errorCode=NULL,sanitizedError=NULL WHERE packageName=:packageName AND state != 'STOPPED'") suspend fun markPackageStopped(packageName:String, now:Long, phase:String): Int
     @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase='STOPPED',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now WHERE state != 'STOPPED'") suspend fun stopAll(now:Long)
     @Query("UPDATE virtual_runtime_sessions SET state='STOPPED',launchPhase='STOPPED_BY_HOST',stoppedAt=:now,lastActivityAt=:now,lastHeartbeatAt=:now,errorCode=NULL,sanitizedError=NULL,lastRuntimeExitReason='STOPPED_BY_HOST',processExitDetectedBy='HOST_REMOVED_FROM_RECENTS' WHERE state != 'STOPPED'") suspend fun stopAllByHost(now:Long): Int
 }

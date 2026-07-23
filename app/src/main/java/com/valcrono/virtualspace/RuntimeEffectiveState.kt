@@ -20,6 +20,22 @@ data class RuntimeAppSnapshot(
 
 enum class DisplayedAppState { STOPPED, STARTING, ACTIVE_FOREGROUND, ACTIVE_BACKGROUND, STOPPING, CHECKING_RUNTIME, ERROR }
 
+fun isRuntimeActive(snapshot: RuntimeAppSnapshot?): Boolean {
+    if (snapshot == null) return false
+    return snapshot.sessionId != null &&
+        snapshot.slotId != null &&
+        snapshot.pid != null &&
+        snapshot.pid > 0 &&
+        snapshot.processAlive &&
+        snapshot.serviceConnected &&
+        snapshot.slotState in setOf(
+            RuntimeSlotState.STARTING,
+            RuntimeSlotState.OCCUPIED,
+            RuntimeSlotState.ACTIVE_FOREGROUND,
+            RuntimeSlotState.ACTIVE_BACKGROUND,
+        )
+}
+
 fun deriveDisplayedState(snapshot: RuntimeAppSnapshot?): DisplayedAppState {
     if (snapshot == null) return DisplayedAppState.STOPPED
 
@@ -30,14 +46,15 @@ fun deriveDisplayedState(snapshot: RuntimeAppSnapshot?): DisplayedAppState {
 
     return when (snapshot.slotState) {
         RuntimeSlotState.ACTIVE_FOREGROUND -> DisplayedAppState.ACTIVE_FOREGROUND
-        RuntimeSlotState.ACTIVE_BACKGROUND, RuntimeSlotState.PAUSED_BY_USER -> DisplayedAppState.ACTIVE_BACKGROUND
+        RuntimeSlotState.ACTIVE_BACKGROUND -> DisplayedAppState.ACTIVE_BACKGROUND
+        RuntimeSlotState.PAUSED_BY_USER -> DisplayedAppState.STOPPED
         RuntimeSlotState.STARTING, RuntimeSlotState.RESERVED, RuntimeSlotState.PROCESS_STARTING,
         RuntimeSlotState.SERVICE_CONNECTED, RuntimeSlotState.LOAD_REQUEST_SENT,
         RuntimeSlotState.CLASSLOADER_READY, RuntimeSlotState.ACTIVITY_STARTING -> DisplayedAppState.STARTING
         RuntimeSlotState.STOPPING -> DisplayedAppState.STOPPING
         RuntimeSlotState.ERROR, RuntimeSlotState.FAILED -> DisplayedAppState.ERROR
         RuntimeSlotState.FREE, RuntimeSlotState.STOPPED, RuntimeSlotState.CRASHED,
-        RuntimeSlotState.RECOVERING, RuntimeSlotState.ADOPTING -> DisplayedAppState.STOPPED
+        RuntimeSlotState.RECOVERING, RuntimeSlotState.ADOPTING, RuntimeSlotState.OCCUPIED -> DisplayedAppState.STOPPED
     }
 }
 
@@ -68,7 +85,7 @@ fun buildRuntimeAppSnapshot(
         serviceConnected = matchingSlot != null && slotState != RuntimeSlotState.FREE,
         binderAlive = matchingSlot?.binderAlive == true,
         heartbeatAgeMs = heartbeatAgeMs,
-        classLoaderLoaded = matchingSession?.classLoaderState == "LOADED" || slotState in setOf(RuntimeSlotState.ACTIVE_FOREGROUND, RuntimeSlotState.ACTIVE_BACKGROUND, RuntimeSlotState.PAUSED_BY_USER),
+        classLoaderLoaded = matchingSession?.classLoaderState == "LOADED" || slotState in setOf(RuntimeSlotState.ACTIVE_FOREGROUND, RuntimeSlotState.ACTIVE_BACKGROUND),
         activityAttached = matchingSlot?.activityAttached == true,
     )
 }
