@@ -5,14 +5,14 @@ import org.junit.Test
 import java.io.File
 
 private fun src(path: String): String {
-    val start = File(System.getProperty("user.dir"))
+    val start = File(System.getProperty("user.dir") ?: ".")
     val candidates = generateSequence(start) { it.parentFile }.map { File(it, path) } + sequenceOf(File(path))
     return candidates.firstOrNull { it.isFile }?.readText() ?: error("Source file not found from ${start.absolutePath}: $path")
 }
 
 class LaunchTracePersistsEveryPhaseTest {
     @Test fun allRequiredPhasesAreDeclaredAndPersisted() {
-        val source = src("app/src/main/java/com/valcrono/virtualspace/RuntimeLaunchDiagnostics.kt") + src("app/src/main/java/com/valcrono/virtualspace/RuntimeSlots.kt") + src("app/src/main/java/com/valcrono/virtualspace/RuntimeSessionRepository.kt")
+        val source = src("app/src/main/java/com/valcrono/virtualspace/RuntimeLaunchDiagnostics.kt") + src("app/src/main/java/com/valcrono/virtualspace/RuntimeSlots.kt") + src("app/src/main/java/com/valcrono/virtualspace/RuntimeSessionRepository.kt") + src("app/src/main/java/com/valcrono/virtualspace/VirtualRoom.kt")
         RuntimeLaunchPhases.REQUIRED.forEach { assertTrue("missing phase $it", source.contains(it)) }
         assertTrue(source.contains("insertRuntimeLaunchTrace"))
         assertTrue(source.contains("durationMs"))
