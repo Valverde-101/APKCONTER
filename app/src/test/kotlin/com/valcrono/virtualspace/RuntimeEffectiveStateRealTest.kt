@@ -81,6 +81,25 @@ class DisplayedStateInvariantTest {
         val freeSlot = testSlot("FREE").copy(packageName = null, sessionId = null, hostPid = null, binderAlive = false)
         val displayed = calculateDisplayedState(app, freeSlot, testSession("ACTIVE"), currentRuntimeGeneration = TEST_RUNTIME_GENERATION)
         assertEquals(DisplayedAppState.STOPPED, displayed)
-        assertFalse(freeSlot.state == "FREE" && displayed == DisplayedAppState.ACTIVE)
+        assertFalse(freeSlot.state == "FREE" && displayed in setOf(DisplayedAppState.ACTIVE_FOREGROUND, DisplayedAppState.ACTIVE_BACKGROUND))
+    }
+}
+
+class DisplayedStateRuntimeSnapshotTest {
+    @Test fun aliveOccupiedRuntimeNeverDisplaysStopped() {
+        val snapshot = RuntimeAppSnapshot(
+            packageName = "pkg",
+            sessionId = "s1",
+            slotId = "VAPP0",
+            slotState = RuntimeSlotState.ACTIVE_BACKGROUND,
+            pid = 1234,
+            processAlive = true,
+            serviceConnected = true,
+            binderAlive = true,
+            heartbeatAgeMs = 100,
+            classLoaderLoaded = true,
+            activityAttached = false,
+        )
+        assertEquals(DisplayedAppState.ACTIVE_BACKGROUND, productionSafeDisplayedState(deriveDisplayedState(snapshot), snapshot))
     }
 }
