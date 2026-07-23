@@ -433,15 +433,16 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
                     Text("Datos: ${formatBytes(repository.storage().usedBytes(pkg.virtualUserId, pkg.packageName))}")
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (pkg.compatibilityLevel == "COOPERATIVE_SUPPORTED" && pkg.entryPointClass != null) {
+                    if (pkg.runtimeMode == "COOPERATIVE" && pkg.cooperativeEntryPointClass != null) {
                         Button(
                             onClick = { openVirtual(pkg) },
                             enabled = runtimeUiState.displayedState !in setOf(DisplayedAppState.STARTING, DisplayedAppState.CHECKING_RUNTIME, DisplayedAppState.STOPPING) && pkg.enabled && !pkg.damaged,
                             modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                         ) { Text(launchButtonLabel(runtimeUiState.primaryAction)) }
                     } else {
-                        Text(if (pkg.importState == "BLOCKED") "APK bloqueado: ver incompatibilidad." else "APK importado para análisis; ejecución genérica V1 experimental no activada.")
-                        Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer("/data/app/${pkg.packageName}/base.apk"); destination = Destination.FILES }) { Text("Inspeccionar") }
+                        Text(when { pkg.importState == "BLOCKED" -> "Bloqueada: ver incompatibilidad."; pkg.runtimeMode == "GENERIC_EXPERIMENTAL" -> "Experimental: ejecución genérica disponible."; else -> "Solo inspección: ${pkg.blockingReasonsJson}" })
+                        if (pkg.runtimeMode == "GENERIC_EXPERIMENTAL") Button(onClick = { openVirtual(pkg) }) { Text("Abrir experimental") }
+                        Button(onClick = { selectedPackage = pkg; fileDestination = FileDestination.ApkViewer(pkg.apkInternalPath); destination = Destination.FILES }) { Text("Inspeccionar") }
                     }
                     when (effectiveState) {
                         RuntimeEffectiveState.STARTING -> OutlinedButton(onClick = { stopPackage(pkg) }) { Text("Cancelar") }
@@ -746,7 +747,23 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
             "Hash del APK" to pkg.sha256,
             "Ruta interna" to "aislada (no expuesta a apps virtuales)",
             "Firma" to "Validada por PackageManager",
-            "Entry point" to (pkg.entryPointClass ?: "No disponible"),
+            "Actividad de inicio Android" to (pkg.launcherActivityName ?: "No disponible"),
+            "Entry point cooperativo Valcrono" to (pkg.cooperativeEntryPointClass ?: "No disponible"),
+            "Runtime seleccionado" to pkg.runtimeMode,
+            "Capacidad runtime genérico" to pkg.genericRuntimeCapability,
+            "ABI del dispositivo" to android.os.Build.SUPPORTED_ABIS.joinToString(),
+            "ABIs del APK" to pkg.supportedAbisJson,
+            "Coincidencia ABI" to (if (pkg.primaryAbi != null) "${pkg.primaryAbi}" else "No aplica / no compatible"),
+            "Archivos .so" to pkg.nativeLibraryCount.toString(),
+            "DEX" to pkg.dexCount.toString(),
+            "Custom Application" to (pkg.applicationClassName ?: "No"),
+            "Servicios" to pkg.declaredServicesJson,
+            "Providers" to pkg.declaredProvidersJson,
+            "Receivers" to pkg.declaredReceiversJson,
+            "Split APK" to "${pkg.isSplitApk} ${pkg.splitNamesJson}",
+            "Compatibilidad de recursos" to "Package archive + resources detectados por Android/AXML",
+            "Motivos compatibilidad" to pkg.compatibilityReasonsJson,
+            "Motivos bloqueo" to pkg.blockingReasonsJson,
             "Estado" to (roomSession?.state ?: "DETENIDA"),
             "sessionId" to (roomSession?.sessionId?.take(8) ?: "No disponible"),
             "launchAttemptId" to (roomSession?.currentLaunchAttemptId?.take(8) ?: "No disponible"),
@@ -1234,7 +1251,7 @@ class MainActivity : ComponentActivity(), ComponentCallbacks2 {
     }
 
     private fun launchVirtual(pkg: VirtualPackageEntity) {
-        val activity = pkg.entryPointClass ?: run { importStatus = "No ejecutable: entry point no declarado"; return }
+        val activity = when (pkg.runtimeMode) { "COOPERATIVE" -> pkg.cooperativeEntryPointClass ?: pkg.entryPointClass; "GENERIC_EXPERIMENTAL" -> pkg.launcherActivityName; else -> null } ?: run { importStatus = "No ejecutable: runtime ${pkg.runtimeMode}, motivos ${pkg.blockingReasonsJson}"; return }
         if (pkg.compatibilityLevel != "COOPERATIVE_SUPPORTED") { importStatus = "Importada · No compatible con runtime cooperativo · Entry point no declarado"; return }
         kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
             val prepared = withContext(Dispatchers.IO) { runtimeController.prepareLaunch(pkg, activity, settingsStore.settings.first().maxActiveApps) }
