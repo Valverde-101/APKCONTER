@@ -32,7 +32,7 @@ class GenericRuntimeStaticTest {
         assertTrue(adapters.contains("interface VirtualRuntimeAdapter"))
         assertTrue(adapters.contains("class CooperativeRuntimeAdapter"))
         assertTrue(adapters.contains("class GenericApkRuntimeAdapter"))
-        assertTrue(slots.contains("runtimeAdapterFor(pkg)"))
+        assertTrue(slots.contains("RuntimeEngineRegistry.select"))
     }
 
     @Test fun startupReprocessUsesExistingLoggerApi() {
