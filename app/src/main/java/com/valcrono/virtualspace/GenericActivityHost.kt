@@ -14,12 +14,16 @@ import android.content.res.Resources
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import com.valcrono.core.VLog
 import com.valcrono.runtime.VirtualContent
 import dalvik.system.DexClassLoader
+import dalvik.system.DelegateLastClassLoader
 import java.io.File
+import java.lang.reflect.Constructor
+import java.lang.reflect.Modifier
 import java.util.zip.ZipFile
 
-val GENERIC_LAUNCH_PHASES = listOf("APK_PATH_VALIDATED", "DEX_LOADED", "RESOURCES_LOADED", "APPLICATION_CREATED", "GUEST_ACTIVITY_INSTANTIATED", "GUEST_ACTIVITY_ATTACHED", "GUEST_ACTIVITY_CREATED", "GUEST_ACTIVITY_RESUMED")
+val GENERIC_LAUNCH_PHASES = RuntimeLaunchPhase.values().map { it.name }
 
 class GenericRuntimeAdapter(private val context: Context) : VirtualRuntimeAdapter {
     override fun start(pkg: VirtualPackageEntity): RunningVirtualApplication = GenericAndroidRuntimeAdapter(context.applicationContext).start(pkg)
@@ -61,8 +65,15 @@ class GenericPackageManagerFacade(private val pkg: VirtualPackageEntity, private
 }
 
 
-class VirtualPackageManagerFacade(private val pkg: VirtualPackageEntity, private val appInfo: ApplicationInfo)
-class VirtualContentResolver
+class VirtualPackageManagerFacade(private val pkg: VirtualPackageEntity, private val appInfo: ApplicationInfo) {
+    val virtualUid: Int = java.util.Objects.hash(pkg.virtualUserId, pkg.packageName).let { if (it < 0) -it else it }
+    fun getPackageInfo(packageName: String): android.content.pm.PackageInfo { require(packageName == pkg.packageName) { "VIRTUAL_PACKAGE_NOT_VISIBLE:$packageName" }; return android.content.pm.PackageInfo().apply { this.packageName = pkg.packageName; applicationInfo = ApplicationInfo(appInfo) } }
+    fun getApplicationInfo(packageName: String): ApplicationInfo = getPackageInfo(packageName).applicationInfo!!
+    fun getLaunchIntentForPackage(packageName: String): Intent? { if (packageName != pkg.packageName) return null; val activity = pkg.launcherTargetActivity ?: pkg.launcherActivityName ?: return null; return Intent().setClassName(pkg.packageName, activity) }
+    fun checkPermission(permission: String, packageName: String): Int = if (packageName == pkg.packageName) PackageManager.PERMISSION_GRANTED else PackageManager.PERMISSION_DENIED
+    fun getPackagesForUid(uid: Int): Array<String>? = if (uid == virtualUid) arrayOf(pkg.packageName) else null
+}
+class VirtualContentResolver(private val host: android.content.ContentResolver? = null)
 class VirtualSharedPreferencesManager
 class VirtualSystemServiceBroker(private val host: Context) { fun getSystemService(name: String): Any? = host.getSystemService(name) }
 
@@ -75,8 +86,41 @@ abstract class ReflectiveActivityAttachBridge(private val minParams: Int) : Acti
 class ActivityAttachBridgeApi24To27 : ReflectiveActivityAttachBridge(18)
 class ActivityAttachBridgeApi28To34 : ReflectiveActivityAttachBridge(20)
 class ActivityAttachBridgeApi35 : ReflectiveActivityAttachBridge(20)
-class VirtualProviderManager
-class AndroidXStartupBridge
+class VirtualProviderManager {
+    fun initializeProviders(context: Context, loader: ClassLoader, providers: List<android.content.pm.ProviderInfo>, phases: MutableList<String>): List<String> {
+        phases += RuntimeLaunchPhase.PROVIDERS_DISCOVERING.name
+        val initialized = mutableListOf<String>()
+        phases += RuntimeLaunchPhase.PROVIDERS_INITIALIZING.name
+        providers.forEach { info ->
+            val name = info.name ?: return@forEach
+            try {
+                val provider = Class.forName(name, true, loader).getDeclaredConstructor().newInstance() as android.content.ContentProvider
+                provider.attachInfo(context, info)
+                if (!provider.onCreate()) VLog.i("VirtualProviderManager", "Provider onCreate returned false: $name authorities=${info.authority}")
+                initialized += "${name}:${info.authority}"
+            } catch (t: Throwable) { throw IllegalStateException("PROVIDER_INITIALIZATION_FAILED provider=$name authorities=${info.authority}", t) }
+        }
+        phases += RuntimeLaunchPhase.PROVIDERS_READY.name
+        return initialized
+    }
+}
+class AndroidXStartupBridge { fun recordInitializationProvider(providers: List<android.content.pm.ProviderInfo>): List<String> = providers.filter { it.name == "androidx.startup.InitializationProvider" }.mapNotNull { it.authority } }
+
+enum class ClassSource { ANDROID_BOOT, HOST_APPLICATION, GUEST_BASE_APK, GUEST_SPLIT_APK, UNKNOWN }
+data class LoadedClassOrigin(val className: String, val classLoaderName: String?, val dexPath: String?, val source: ClassSource)
+object ClassLoaderCollisionDetector {
+    private val watched = listOf("androidx.activity", "androidx.appcompat", "androidx.lifecycle", "androidx.savedstate", "androidx.fragment", "androidx.core", "kotlin", "kotlinx.coroutines")
+    fun isWatched(name: String) = watched.any { name == it || name.startsWith("$it.") }
+}
+object GuestClassLoaderFactory {
+    fun create(apk: File, opt: File, nativeDir: File?, parent: ClassLoader): ClassLoader = if (Build.VERSION.SDK_INT >= 27) DelegateLastClassLoader(apk.absolutePath, nativeDir?.absolutePath, parent) else DexClassLoader(apk.absolutePath, opt.absolutePath, nativeDir?.absolutePath, parent)
+    fun origin(clazz: Class<*>, apk: File, host: Context): LoadedClassOrigin {
+        val loaderName = clazz.classLoader?.javaClass?.name ?: "BOOT"
+        val dexPath = when { clazz.classLoader == null -> null; clazz.classLoader === host.classLoader -> host.applicationInfo.sourceDir; else -> apk.absolutePath }
+        val source = when { clazz.classLoader == null -> ClassSource.ANDROID_BOOT; clazz.classLoader === host.classLoader -> ClassSource.HOST_APPLICATION; dexPath == apk.absolutePath -> ClassSource.GUEST_BASE_APK; else -> ClassSource.UNKNOWN }
+        return LoadedClassOrigin(clazz.name, loaderName, dexPath, source)
+    }
+}
 
 class GuestActivityController(private val hostContext: Context, private val pkg: VirtualPackageEntity) {
     private val instrumentation = GenericInstrumentation()
@@ -86,13 +130,13 @@ class GuestActivityController(private val hostContext: Context, private val pkg:
         if (pkg.detectedFramework == "FLUTTER") throw IllegalStateException("FLUTTER_RUNTIME_NOT_IMPLEMENTED packageName=${pkg.packageName}")
         val root = VirtualPackageStorageV1(hostContext.filesDir).root(pkg.packageName)
         val apk = File(pkg.apkInternalPath)
-        require(apk.isFile) { "APK_FILE_MISSING packageName=${pkg.packageName} apkPath=${apk.absolutePath}" }; phases += "APK_PATH_VALIDATED"
+        require(apk.isFile) { "APK_FILE_MISSING packageName=${pkg.packageName} apkPath=${apk.absolutePath}" }; phases += RuntimeLaunchPhase.APK_ARTIFACT_VALIDATED.name
         val nativeDir = NativeLibraryExtractor.extract(apk, File(root, "data/code_cache/native")); val opt = File(root, "data/code_cache/dex").apply { mkdirs() }
-        val loader = DexClassLoader(apk.absolutePath, opt.absolutePath, nativeDir?.absolutePath, hostContext.classLoader); phases += "DEX_LOADED"
-        val res = apkResources(apk); phases += "RESOURCES_LOADED"
+        val loader = GuestClassLoaderFactory.create(apk, opt, nativeDir, hostContext.classLoader); phases += RuntimeLaunchPhase.CLASSLOADER_READY.name
+        phases += RuntimeLaunchPhase.RESOURCES_CREATING.name; val res = apkResources(apk); phases += RuntimeLaunchPhase.RESOURCES_READY.name
         val appInfo = ApplicationInfo().apply { packageName = pkg.packageName; sourceDir = apk.absolutePath; publicSourceDir = apk.absolutePath; dataDir = File(root, "data").absolutePath; nativeLibraryDir = nativeDir?.absolutePath ?: File(root, "data/code_cache/native/empty").apply { mkdirs() }.absolutePath; className = pkg.applicationClassName }
         val gctx = GenericPackageContext(hostContext, pkg, root, loader, res, appInfo)
-        val app = createApplication(gctx, loader); phases += "APPLICATION_CREATED"
+        val app = createApplication(gctx, loader); phases += RuntimeLaunchPhase.APPLICATION_READY.name; VirtualProviderManager().initializeProviders(gctx, loader, emptyList(), phases)
         return GenericRunningVirtualApplication(pkg, this, gctx, app, phases)
     }
     fun launchInto(host: Activity): View {
@@ -102,16 +146,39 @@ class GuestActivityController(private val hostContext: Context, private val pkg:
         val loader = gctx.classLoader
         val activityName = pkg.launcherTargetActivity ?: pkg.launcherActivityName ?: throw IllegalStateException("ACTIVITY_CLASS_NOT_FOUND")
         val intent = Intent().setClassName(pkg.packageName, activityName)
-        val activity = try { instrumentation.newActivity(loader, activityName, intent) } catch (e: ClassNotFoundException) { throw IllegalStateException("ACTIVITY_CLASS_NOT_FOUND activityName=$activityName", e) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_INSTANTIATION_FAILED activityName=$activityName", t) }
-        running.genericPhases += "GUEST_ACTIVITY_INSTANTIATED"
-        ActivityAttachBridge.select().attach(activity, gctx, app, instrumentation, intent, pkg.label); running.genericPhases += "GUEST_ACTIVITY_ATTACHED"
-        try { instrumentation.callActivityOnCreate(activity, Bundle()) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_ONCREATE_FAILED activityName=$activityName", t) }; running.genericPhases += "GUEST_ACTIVITY_CREATED"
-        try { instrumentation.callActivityOnStart(activity); instrumentation.callActivityOnResume(activity) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_ONRESUME_FAILED activityName=$activityName", t) }; running.genericPhases += "GUEST_ACTIVITY_RESUMED"
+        val activity = instantiateActivity(activityName, loader, apk = File(pkg.apkInternalPath), hostContext = hostContext, phases = running.genericPhases)
+        ActivityAttachBridge.select().attach(activity, gctx, app, instrumentation, intent, pkg.label); running.genericPhases += RuntimeLaunchPhase.ACTIVITY_ATTACHED.name
+        try { instrumentation.callActivityOnCreate(activity, Bundle()) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_ONCREATE_FAILED activityName=$activityName", t) }; running.genericPhases += RuntimeLaunchPhase.ACTIVITY_ONCREATE.name
+        try { instrumentation.callActivityOnStart(activity); instrumentation.callActivityOnResume(activity) } catch (t: Throwable) { throw IllegalStateException("ACTIVITY_ONRESUME_FAILED activityName=$activityName", t) }; running.genericPhases += RuntimeLaunchPhase.ACTIVITY_ONRESUME.name
         running.genericGuestActivity = activity
         return activity.window.decorView
     }
     private fun apkResources(apk: File): Resources = try { val assets = AssetManager::class.java.getDeclaredConstructor().newInstance(); AssetManager::class.java.getMethod("addAssetPath", String::class.java).invoke(assets, apk.absolutePath); Resources(assets, hostContext.resources.displayMetrics, hostContext.resources.configuration) } catch (t: Throwable) { throw IllegalStateException("RESOURCE_LOAD_FAILED apkPath=${apk.absolutePath}", t) }
-    private fun createApplication(context: Context, loader: ClassLoader): Application { val name = pkg.applicationClassName ?: Application::class.java.name; return try { instrumentation.newApplication(loader, name, context).also { it.onCreate() } } catch (e: ClassNotFoundException) { throw IllegalStateException("APPLICATION_CLASS_NOT_FOUND applicationClass=$name", e) } catch (t: Throwable) { throw IllegalStateException("APPLICATION_CREATE_FAILED applicationClass=$name", t) } }
+    private fun createApplication(context: Context, loader: ClassLoader): Application {
+        val name = pkg.applicationClassName ?: Application::class.java.name
+        phases += RuntimeLaunchPhase.APPLICATION_CLASS_RESOLVING.name
+        val app = try { phases += RuntimeLaunchPhase.APPLICATION_INSTANTIATING.name; instrumentation.newApplication(loader, name, context) } catch (e: ClassNotFoundException) { throw IllegalStateException("APPLICATION_CLASS_NOT_FOUND applicationClass=$name", e) } catch (t: Throwable) { throw IllegalStateException("APPLICATION_CREATE_FAILED applicationClass=$name", t) }
+        phases += RuntimeLaunchPhase.APPLICATION_ATTACHED.name
+        try { phases += RuntimeLaunchPhase.APPLICATION_ONCREATE.name; app.onCreate() } catch (t: Throwable) { throw IllegalStateException("APPLICATION_ONCREATE_FAILED applicationClass=$name", t) }
+        return app
+    }
+    private fun instantiateActivity(activityName: String, loader: ClassLoader, apk: File, hostContext: Context, phases: MutableList<String>): Activity {
+        phases += RuntimeLaunchPhase.ACTIVITY_CLASS_RESOLVING.name
+        val activityClass = try { Class.forName(activityName, false, loader) } catch (e: ClassNotFoundException) { throw IllegalStateException("ACTIVITY_CLASS_NOT_FOUND activityName=$activityName classLoader=${loader.javaClass.name}", e) } catch (e: NoClassDefFoundError) { throw IllegalStateException("ACTIVITY_DEPENDENCY_MISSING activityName=$activityName classLoader=${loader.javaClass.name}", e) } catch (e: VerifyError) { throw IllegalStateException("ACTIVITY_VERIFY_ERROR activityName=$activityName", e) } catch (e: LinkageError) { throw IllegalStateException("ACTIVITY_LINKAGE_ERROR activityName=$activityName", e) }
+        phases += RuntimeLaunchPhase.ACTIVITY_CLASS_RESOLVED.name
+        val origin = GuestClassLoaderFactory.origin(activityClass, apk, hostContext)
+        val superOrigin = activityClass.superclass?.let { GuestClassLoaderFactory.origin(it, apk, hostContext) }
+        phases += RuntimeLaunchPhase.ACTIVITY_SUPERCLASS_INSPECTED.name
+        require(Activity::class.java.isAssignableFrom(activityClass)) { "ACTIVITY_CLASS_NOT_ACTIVITY activityName=$activityName resolved=${activityClass.name} origin=$origin superclass=$superOrigin" }
+        val modifiers = activityClass.modifiers
+        require(!Modifier.isAbstract(modifiers) && !Modifier.isInterface(modifiers)) { "ACTIVITY_CLASS_NOT_CONCRETE activityName=$activityName modifiers=$modifiers" }
+        @Suppress("UNCHECKED_CAST")
+        val constructor: Constructor<out Activity> = try { phases += RuntimeLaunchPhase.ACTIVITY_CONSTRUCTOR_RESOLVING.name; activityClass.asSubclass(Activity::class.java).getDeclaredConstructor() } catch (e: NoSuchMethodException) { throw IllegalStateException("ACTIVITY_NO_EMPTY_CONSTRUCTOR activityName=$activityName origin=$origin", e) }
+        phases += RuntimeLaunchPhase.ACTIVITY_CONSTRUCTOR_READY.name
+        if (!Modifier.isPublic(constructor.modifiers)) constructor.isAccessible = true
+        try { phases += RuntimeLaunchPhase.ACTIVITY_CLASS_INITIALIZING.name; Class.forName(activityName, true, loader) } catch (e: ExceptionInInitializerError) { throw IllegalStateException("ACTIVITY_STATIC_INITIALIZER_FAILED activityName=$activityName origin=$origin", e) } catch (e: LinkageError) { throw IllegalStateException("ACTIVITY_LINKAGE_ERROR activityName=$activityName origin=$origin", e) }
+        return try { phases += RuntimeLaunchPhase.ACTIVITY_INSTANTIATING.name; constructor.newInstance().also { phases += RuntimeLaunchPhase.ACTIVITY_INSTANTIATED.name } } catch (e: java.lang.reflect.InvocationTargetException) { throw IllegalStateException("ACTIVITY_CONSTRUCTOR_FAILED activityName=$activityName origin=$origin constructorModifiers=${constructor.modifiers}", e) } catch (e: InstantiationException) { throw IllegalStateException("ACTIVITY_INSTANTIATION_FAILED activityName=$activityName", e) } catch (e: IllegalAccessException) { throw IllegalStateException("ACTIVITY_CONSTRUCTOR_INACCESSIBLE activityName=$activityName", e) } catch (e: SecurityException) { throw IllegalStateException("ACTIVITY_CONSTRUCTOR_SECURITY_FAILED activityName=$activityName", e) } catch (e: LinkageError) { throw IllegalStateException("ACTIVITY_LINKAGE_ERROR activityName=$activityName", e) }
+    }
 
 }
 
