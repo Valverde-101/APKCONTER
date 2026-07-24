@@ -18,8 +18,34 @@ class GenericRuntimeArchitectureContractTest {
     }
 
     @Test fun requiredLaunchPhasesAreDeclared() {
-        val s = src("app/src/main/java/com/valcrono/virtualspace/GenericActivityHost.kt")
-        listOf("APK_PATH_VALIDATED", "DEX_LOADED", "RESOURCES_LOADED", "APPLICATION_CREATED", "GUEST_ACTIVITY_INSTANTIATED", "GUEST_ACTIVITY_ATTACHED", "GUEST_ACTIVITY_CREATED", "GUEST_ACTIVITY_RESUMED").forEach { assertTrue(it, s.contains(it)) }
+        val host = src("app/src/main/java/com/valcrono/virtualspace/GenericActivityHost.kt")
+        val engines = src("app/src/main/java/com/valcrono/virtualspace/RuntimeEngines.kt")
+        listOf(
+            "APK_ARTIFACT_VALIDATED",
+            "CLASSLOADER_READY",
+            "RESOURCES_CREATING",
+            "RESOURCES_READY",
+            "APPLICATION_CLASS_RESOLVING",
+            "APPLICATION_INSTANTIATING",
+            "APPLICATION_ATTACHED",
+            "APPLICATION_ONCREATE",
+            "APPLICATION_READY",
+            "PROVIDERS_DISCOVERING",
+            "PROVIDERS_INITIALIZING",
+            "PROVIDERS_READY",
+            "ACTIVITY_CLASS_RESOLVING",
+            "ACTIVITY_CLASS_RESOLVED",
+            "ACTIVITY_SUPERCLASS_INSPECTED",
+            "ACTIVITY_CONSTRUCTOR_RESOLVING",
+            "ACTIVITY_CONSTRUCTOR_READY",
+            "ACTIVITY_CLASS_INITIALIZING",
+            "ACTIVITY_INSTANTIATING",
+            "ACTIVITY_INSTANTIATED",
+            "ACTIVITY_ATTACHED",
+            "ACTIVITY_ONCREATE",
+            "ACTIVITY_ONRESUME",
+        ).forEach { assertTrue(it, host.contains(it)) }
+        listOf("ENGINE_SELECTED", "GUEST_VIEW_ATTACHED", "ACTIVE_ACKNOWLEDGED", "STABLE").forEach { assertTrue(it, engines.contains(it)) }
     }
 
     @Test fun apkPathResolverCodesAreDeclared() {
