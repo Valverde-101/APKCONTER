@@ -30,3 +30,21 @@ class RuntimeLaunchErrorClassifierTest {
         ).forEach { assertTrue("missing $it", RuntimeLaunchErrorCodes.ALL.contains(it)) }
     }
 }
+
+class RuntimeThrowableProjectorUnwrapTest {
+    @org.junit.Test fun invocationTargetExceptionIsNotRootCause() {
+        val original = IllegalArgumentException("math-studio-root")
+        val wrapped = java.lang.reflect.InvocationTargetException(original)
+        val projection = RuntimeThrowableProjector.project("ACTIVITY_CONSTRUCTOR_FAILED", "ACTIVITY_INSTANTIATING", wrapped)
+        org.junit.Assert.assertEquals(IllegalArgumentException::class.java.name, projection.rootCauseClass)
+        org.junit.Assert.assertTrue(projection.causeChain.any { it.exceptionClass == java.lang.reflect.InvocationTargetException::class.java.name })
+    }
+
+    @org.junit.Test fun initializerErrorIsUnwrapped() {
+        val original = IllegalStateException("initializer-root")
+        val wrapped = ExceptionInInitializerError(original)
+        val classified = RuntimeLaunchErrorClassifier.classify(wrapped, "ACTIVITY_CLASS_INITIALIZING", "GUEST_VIEW_ATTACH_FAILED")
+        org.junit.Assert.assertEquals("ACTIVITY_STATIC_INITIALIZER_FAILED", classified.code)
+        org.junit.Assert.assertEquals(IllegalStateException::class.java.name, classified.rootCauseClass)
+    }
+}

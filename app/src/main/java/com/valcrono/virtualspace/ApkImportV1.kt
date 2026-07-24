@@ -167,10 +167,11 @@ fun classifyRuntime(parsed: AndroidArchivePackageParser.AndroidParsedPackage, ar
     if (parsed.permissions.any { it.name.contains("BIND_VPN_SERVICE") }) blocking += "VPN_UNSUPPORTED"
     parsed.highRiskApis.forEach { reasons += "HIGH_RISK_API_$it" }
     if (parsed.permissions.any { it.name.contains("com.google.android.gms") } || scannerIssueCodes.any { it.contains("GMS") }) reasons += "GMS_UNAVAILABLE_WARNING"
-    if (parsed.framework == "FLUTTER") { reasons += "FRAMEWORK_FLUTTER_DETECTED"; blocking += "FLUTTER_RUNTIME_NOT_IMPLEMENTED" }
+    if (parsed.framework == "FLUTTER") { reasons += "FRAMEWORK_FLUTTER_DETECTED"; reasons += "FLUTTER_ENGINE_REQUIRED" }
     if (parsed.permissions.any { it.name.contains("PLAY_INTEGRITY") }) reasons += "PLAY_INTEGRITY_LIMITATION"
     if (archive.nativeLibraryCount == 0) reasons += "GENERIC_SIMPLE_NO_NATIVE_CODE" else reasons += if (abiMatch) "GENERIC_NATIVE_COMPATIBLE" else "NATIVE_ABI_MISMATCH"
     val hardRuntimeRisks = setOf("HIGH_RISK_API_ACCESSIBILITY", "HIGH_RISK_API_VPN", "HIGH_RISK_API_DEVICE_ADMIN", "HIGH_RISK_API_MULTIPROCESS", "HIGH_RISK_API_SHIZUKU", "HIGH_RISK_API_PRIVILEGED_SERVICE")
+    if (parsed.framework == "FLUTTER") return RuntimeClassification("FLUTTER", "ENGINE_PENDING", "ENGINE_PENDING", "READY", reasons, emptyList())
     val canAttemptGeneric = blocking.isEmpty() && reasons.none { it in hardRuntimeRisks }
     return if (canAttemptGeneric) RuntimeClassification("GENERIC_EXPERIMENTAL", if (archive.nativeLibraryCount == 0) "GENERIC_SIMPLE_EXECUTABLE" else "GENERIC_NATIVE_COMPATIBLE_EXECUTABLE", "GENERIC_EXPERIMENTAL", "READY", reasons + "GENERIC_ACTIVITY_HOST_AVAILABLE", emptyList())
     else RuntimeClassification("INSPECTION_ONLY", "INSPECTION_ONLY", if (blocking.isEmpty()) "HIGH_RISK" else blocking.first(), if (blocking.isEmpty()) "INSPECTION_ONLY" else "BLOCKED", reasons, blocking.ifEmpty { reasons.filter { it.startsWith("HIGH_RISK_API_") }.ifEmpty { listOf("RUNTIME_INCOMPATIBILITY_UNSPECIFIED") } })

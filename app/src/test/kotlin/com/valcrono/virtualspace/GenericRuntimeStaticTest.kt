@@ -32,7 +32,7 @@ class GenericRuntimeStaticTest {
         assertTrue(adapters.contains("interface VirtualRuntimeAdapter"))
         assertTrue(adapters.contains("class CooperativeRuntimeAdapter"))
         assertTrue(adapters.contains("class GenericApkRuntimeAdapter"))
-        assertTrue(slots.contains("runtimeAdapterFor(pkg)"))
+        assertTrue(slots.contains("RuntimeEngineRegistry.select"))
     }
 
     @Test fun startupReprocessUsesExistingLoggerApi() {
@@ -41,6 +41,14 @@ class GenericRuntimeStaticTest {
         assertFalse(repository.contains("VLog.w("))
         assertTrue(repository.contains("VLog.e("))
         assertTrue(core.contains("fun e(tag:String,msg:String,t:Throwable?=null)"))
+    }
+
+    @Test fun genericActivityHostUsesAndroidCompatibleDiagnostics() {
+        val host = source("app/src/main/java/com/valcrono/virtualspace/GenericActivityHost.kt")
+        assertFalse(host.contains("VLog.w("))
+        assertFalse(host.contains(".canAccess("))
+        assertTrue(host.contains("VLog.i("))
+        assertTrue(host.contains("constructor.isAccessible = true"))
     }
 
     @Test fun nativeLibrariesAreNotAutomaticallyBlocked() {
