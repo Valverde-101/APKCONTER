@@ -5,6 +5,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.ComponentCallbacks2
 import android.os.Binder
+import android.os.Build
 import android.os.Debug
 import android.os.IBinder
 import android.os.Process
@@ -237,7 +238,7 @@ open class RuntimeProcessService : Service() {
     inner class RuntimeBinder : Binder() {
         fun startSession(request: RuntimeLaunchRequest): RuntimeIpcResult = guarded("START_FAILED") { this@RuntimeProcessService.startSession(request) }
         fun attachUi(sessionId: String, callback: RuntimeUiCallback? = null): RuntimeContentResult = runCatching { this@RuntimeProcessService.attachUi(sessionId, callback) }.getOrElse { t -> markFatal(RuntimeLaunchErrorClassifier.classify(t, lastPhase, "ATTACH_UI_FAILED").code, t); RuntimeContentResult(RuntimeIpcResult(false, "ATTACH_UI_FAILED", sanitize(t))) }
-        fun attachGuestView(sessionId: String, host: Activity): GuestViewAttachResult = runCatching { this@RuntimeProcessService.attachGuestView(sessionId, host) }.getOrElse { t -> val c=RuntimeLaunchErrorClassifier.classify(t, lastPhase, "GUEST_VIEW_ATTACH_FAILED"); markFatal(c.code, t); GuestViewAttachResult.Failure(c.code, lastPhase, sanitize(t)) }
+        fun attachGuestView(sessionId: String, host: Activity): GuestViewAttachResult = runCatching { this@RuntimeProcessService.attachGuestView(sessionId, host) }.getOrElse { t -> val c=RuntimeLaunchErrorClassifier.classify(t, lastPhase, "GUEST_VIEW_ATTACH_FAILED"); markFatal(c.code, t); guestViewFailure(c.code, runCatching { RuntimeLaunchPhase.valueOf(lastPhase) }.getOrDefault(RuntimeLaunchPhase.GUEST_VIEW_ATTACHED), t) }
         fun detachUi(sessionId: String): RuntimeIpcResult = this@RuntimeProcessService.detachUi(sessionId)
         fun bringToForeground(sessionId: String): RuntimeIpcResult = checkSession(sessionId).also { if (it.success) setForegroundState() }
         fun getCurrentContent(sessionId: String): RuntimeContentResult = cachedContentResult(sessionId)
@@ -278,9 +279,12 @@ open class RuntimeProcessService : Service() {
         val launchPkg = pkg.copy(apkInternalPath = resolvedApk.file.absolutePath, importedApkPath = resolvedApk.file.absolutePath)
         lastPhase = "APK_ARTIFACT_VALIDATED"; runBlocking { repository.db.runtime().heartbeat(req.sessionId, req.launchAttemptId, lastPhase, System.currentTimeMillis()) }
         trace(req, "APK_ARTIFACT_VALIDATED", "LOAD_REQUEST_SENT", "LOAD_REQUEST_SENT", true, metadata = "{\"apk\":\"${resolvedApk.file.absolutePath}\",\"sha256\":\"${pkg.sha256}\"}")
-        lastPhase = "ENGINE_SELECTED"; trace(req, "ENGINE_SELECTED", "LOAD_REQUEST_SENT", "LOAD_REQUEST_SENT", true, metadata = "{\"runtimeMode\":\"${launchPkg.runtimeMode}\"}")
+        val archiveFacts = ApkArchiveReaderV1.read(resolvedApk.file)
+        val device = DeviceCapabilities(Build.SUPPORTED_ABIS.toList(), Build.VERSION.SDK_INT)
+        val selection = RuntimeEngineRegistry.select(launchPkg, archiveFacts, device)
+        lastPhase = "ENGINE_SELECTED"; trace(req, "ENGINE_SELECTED", "LOAD_REQUEST_SENT", "LOAD_REQUEST_SENT", true, metadata = "{\"runtimeMode\":\"${launchPkg.runtimeMode}\",\"engine\":\"${selection.engine.id}\",\"engineState\":\"${selection.probe.engineState}\"}")
         lastPhase = "CLASSLOADER_CREATING"; trace(req, "CLASSLOADER_CREATING", "LOAD_REQUEST_SENT", "LOAD_REQUEST_SENT", true)
-        adapter = runtimeAdapterFor(launchPkg); running = adapter!!.start(launchPkg); lastPhase = "CLASSLOADER_READY"; trace(req, "CLASSLOADER_READY", "LOAD_REQUEST_SENT", "CLASSLOADER_READY", true); runBlocking { repository.db.runtime().markClassLoaderLoaded(req.sessionId, req.launchAttemptId, System.currentTimeMillis()) }
+        adapter = runtimeAdapterFor(launchPkg, selection); running = adapter!!.start(launchPkg); lastPhase = "CLASSLOADER_READY"; trace(req, "CLASSLOADER_READY", "LOAD_REQUEST_SENT", "CLASSLOADER_READY", true); runBlocking { repository.db.runtime().markClassLoaderLoaded(req.sessionId, req.launchAttemptId, System.currentTimeMillis()) }
         cachedContent = running!!.createContent(); cachedContentVersion++; cachedAt = System.currentTimeMillis()
         runBlocking { repository.db.launchTokens().consume(req.launchToken, System.currentTimeMillis()) }
         val mem2 = currentSlotMemorySnapshot(); state = RuntimeSlotState.ACTIVITY_STARTING; lastPhase = "ACTIVITY_STARTING"
@@ -296,38 +300,35 @@ open class RuntimeProcessService : Service() {
         RuntimeIpcResult(true)
     }
 
-    // source contract marker: runtimeAdapterFor(pkg) selects cooperative vs generic adapters.
-    private fun runtimeAdapterFor(pkg: VirtualPackageEntity): VirtualRuntimeAdapter = when (pkg.runtimeMode) {
+    // RuntimeEngineRegistry.select(pkg, archive, device) is the single runtime selection point.
+    private fun runtimeAdapterFor(pkg: VirtualPackageEntity, selection: RuntimeEngineSelection): VirtualRuntimeAdapter = when (selection.engine.id) {
         "COOPERATIVE" -> CooperativeRuntimeAdapter(this, repository)
-        "GENERIC_EXPERIMENTAL" -> GenericApkRuntimeAdapter(this)
+        "ANDROID_GENERIC_V2" -> GenericApkRuntimeAdapter(this)
+        "FLUTTER" -> error("FLUTTER_ENGINE_PENDING packageName=${pkg.packageName}")
         else -> error("RUNTIME_MODE_NOT_EXECUTABLE:${pkg.runtimeMode}")
     }
 
     private fun attachGuestView(sessionId: String, host: Activity): GuestViewAttachResult {
         val checked = checkSession(sessionId)
         if (!checked.success) {
-            return GuestViewAttachResult.Failure(
-                checked.errorCode ?: "PROCESS_LOST",
-                lastPhase,
-                checked.sanitizedMessage ?: "Proceso no disponible",
-            )
+            return guestViewFailure(checked.errorCode ?: "PROCESS_LOST", runCatching { RuntimeLaunchPhase.valueOf(lastPhase) }.getOrDefault(RuntimeLaunchPhase.GUEST_VIEW_ATTACHED), IllegalStateException(checked.sanitizedMessage ?: "Proceso no disponible"))
         }
         val r = running
         if (r !is GenericRunningVirtualApplication || host !is BaseRuntimeProxyActivity) {
-            return GuestViewAttachResult.Failure("GENERIC_GUEST_VIEW_UNAVAILABLE", lastPhase, "No hay vista invitada disponible.")
+            return guestViewFailure("GENERIC_GUEST_VIEW_UNAVAILABLE", runCatching { RuntimeLaunchPhase.valueOf(lastPhase) }.getOrDefault(RuntimeLaunchPhase.GUEST_VIEW_ATTACHED), IllegalStateException("No hay vista invitada disponible."))
         }
         host.genericContext = r.context
         host.genericApplication = r.application
         host.genericPhases.clear()
         host.genericPhases.addAll(r.phases)
         val result = adapter?.attachGuestView(host, r)
-            ?: GuestViewAttachResult.Failure("GENERIC_GUEST_VIEW_UNAVAILABLE", lastPhase, "No hay vista invitada disponible.")
+            ?: guestViewFailure("GENERIC_GUEST_VIEW_UNAVAILABLE", runCatching { RuntimeLaunchPhase.valueOf(lastPhase) }.getOrDefault(RuntimeLaunchPhase.GUEST_VIEW_ATTACHED), IllegalStateException("No hay vista invitada disponible."))
         if (result is GuestViewAttachResult.Failure) {
-            markFatal(result.errorCode, IllegalStateException(result.sanitizedMessage))
+            markFatal(result.errorCode, result.throwable)
             return result
         }
-        if (result is GuestViewAttachResult.Success && host.genericPhases.contains("GUEST_ACTIVITY_RESUMED")) {
-            lastPhase = "GUEST_ACTIVITY_RESUMED"
+        if (result is GuestViewAttachResult.Success && host.genericPhases.contains(RuntimeLaunchPhase.ACTIVITY_ONRESUME.name)) {
+            lastPhase = RuntimeLaunchPhase.ACTIVITY_ONRESUME.name
             request?.let { req ->
                 val mem = currentSlotMemorySnapshot()
                 val ack = acknowledgeRuntimeActive(req, mem)
